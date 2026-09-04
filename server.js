@@ -1,69 +1,22 @@
 /**
  * Leo Akastel | Business & Tech — Threads Auto-Reply Bot
- * Flow: Threads webhook -> Airtable knowledge base -> OpenAI -> Threads reply -> Airtable log
  */
-const express = require("express");
-const bodyParser = require("body-parser");
-const fetch = require("node-fetch");
+const express=require("express");
+const bodyParser=require("body-parser");
+const fetch=require("node-fetch");
 require("dotenv").config();
-const app = express();
-app.use(bodyParser.json());
-const { THREADS_ACCESS_TOKEN, THREADS_USER_ID, THREADS_VERIFY_TOKEN, AIRTABLE_API_KEY, AIRTABLE_BASE_ID, OPENAI_API_KEY, OPENAI_MODEL = "gpt-5.6-luna", PORT = 3000 } = process.env;
-const AIRTABLE_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}`;
-const seenReplies = new Map();
-const DEDUPE_TTL_MS = 10 * 60 * 1000;
-function isDuplicate(id){
-  const now=Date.now();
-  for(const [key,ts] of seenReplies){ if(now-ts>DEDUPE_TTL_MS) seenReplies.delete(key); }
-  if(seenReplies.has(String(id))) return true;
-  seenReplies.set(String(id),now);
-  return false;
-}
-app.get("/", (_req,res)=>res.status(200).send("Leo Akastel Threads bot is running"));
-app.get("/health", (_req,res)=>res.status(200).json({ok:true}));
-app.get("/webhook", (req,res)=>{ const mode=req.query["hub.mode"], token=req.query["hub.verify_token"], challenge=req.query["hub.challenge"]; if(mode==="subscribe"&&token===THREADS_VERIFY_TOKEN){ console.log("Webhook verified"); return res.status(200).send(challenge); } return res.sendStatus(403); });
-app.post("/webhook", async (req,res)=>{
-  res.sendStatus(200);
-  try {
-    const values=Array.isArray(req.body?.values)?req.body.values:[];
-    console.log("Webhook POST",JSON.stringify({topic:req.body?.topic||null,target_id:req.body?.target_id||null,valueCount:values.length}));
-    for(const item of values){
-      if(item?.field!=="replies"&&item?.field!=="comments") continue;
-      const value=item?.value;
-      if(!value) continue;
-      if(value.id&&isDuplicate(value.id)){ console.log("Reply skipped: duplicate",String(value.id)); continue; }
-      await handleComment(value);
-    }
-    // Compatibility with Graph-style payloads if Meta sends them for other webhook modes.
-    for(const entry of req.body?.entry||[]){
-      for(const change of entry?.changes||[]){
-        if(change?.field!=="replies"&&change?.field!=="comments") continue;
-        const value=change?.value;
-        if(!value) continue;
-        if(value.id&&isDuplicate(value.id)){ console.log("Reply skipped: duplicate",String(value.id)); continue; }
-        await handleComment(value);
-      }
-    }
-  } catch(err){ console.error("Webhook processing error:",err); }
-});
-async function handleComment(comment){
-  const commentId=comment?.id||comment?.reply_id||comment?.media?.id;
-  const text=comment?.text||comment?.reply_text||comment?.media?.text;
-  const author=comment?.username||comment?.from?.username||comment?.user?.username||"unknown";
-  const authorId=comment?.user_id||comment?.from?.id||comment?.user?.id||null;
-  const mediaId=comment?.replied_to?.id||comment?.root_post?.id||comment?.media_id||comment?.media?.id||null;
-  console.log("Parsed reply",JSON.stringify({hasId:!!commentId,hasText:!!text,author}));
-  if(!commentId||!text){ console.log("Reply skipped: missing id/text"); return; }
-  if(authorId&&THREADS_USER_ID&&String(authorId)===String(THREADS_USER_ID)){ console.log("Reply skipped: own account"); return; }
-  const context=await getContext();
-  const replyText=await generateReply(text,context);
-  if(!replyText) return;
-  console.log("AI reply generated",JSON.stringify({length:replyText.length}));
-  const replyId=await postReply(commentId,replyText);
-  await logInteraction({commentId,author,commentText:text,replyText,replyId,mediaId});
-}
-async function getContext(){ const url=`${AIRTABLE_URL}/KnowledgeBase?maxRecords=20`; const res=await fetch(url,{headers:{Authorization:`Bearer ${AIRTABLE_API_KEY}`}}); if(!res.ok){console.error("Airtable KnowledgeBase error:",res.status,await res.text());return "";} const data=await res.json(); return (data.records||[]).map(r=>{const q=r.fields.Question||r.fields.Title||"",a=r.fields.Answer||r.fields.Content||"";return q||a?`- ${q}${q&&a?": ":""}${a}`:"";}).filter(Boolean).join("\n"); }
-async function logInteraction(row){ const url=`${AIRTABLE_URL}/Comments`; const res=await fetch(url,{method:"POST",headers:{Authorization:`Bearer ${AIRTABLE_API_KEY}`,"Content-Type":"application/json"},body:JSON.stringify({fields:{"Comment ID":row.commentId,Author:row.author,"Comment Text":row.commentText,"Reply Text":row.replyText,"Reply ID":row.replyId||"","Media ID":row.mediaId||""}})}); if(!res.ok)console.error("Airtable log error:",res.status,await res.text()); }
-async function generateReply(commentText,knowledgeBase){ const systemPrompt=`Ты — ассистент, который отвечает на комментарии под постами в Threads от имени бренда/аккаунта Leo Akastel | Business & Tech.\n\nТОН И СТИЛЬ:\n- Дружелюбно, живо, без канцелярита\n- Коротко: 1-2 предложения максимум\n- Без эмодзи через каждое слово — максимум 1 emoji, если уместно\n- Пиши на языке, на котором написан комментарий (русский/украинский/английский — определяй автоматически)\n- Обращайся на \"ты\", если комментарий неформальный; на \"вы\" — если формальный\n\nПРАВИЛА:\n1. Если вопрос закрывается базой знаний ниже — используй её, не выдумывай факты\n2. Если комментарий — просто эмоция/благодарность/поддержка — ответь коротко и тепло, без лишней информации\n3. Если комментарий агрессивный, токсичный, провокационный — не вступай в конфликт, ответь нейтрально-вежливо или вообще без сарказма\n4. Если вопрос выходит за рамки твоей компетенции или базы знаний — предложи написать в личные сообщения для детального ответа\n5. Никогда не выдумывай цифры, даты, обещания от лица бренда, если их нет в базе знаний\n6. Не используй кэпс, не кричи, не используй множество восклицательных знаков подряд\n\nБАЗА ЗНАНИЙ:\n${knowledgeBase||"База знаний пока не содержит релевантной информации."}\n\nОтветь только текстом реплая, без пояснений и без кавычек.`; const response=await fetch("https://api.openai.com/v1/chat/completions",{method:"POST",headers:{Authorization:`Bearer ${OPENAI_API_KEY}`,"Content-Type":"application/json"},body:JSON.stringify({model:OPENAI_MODEL,messages:[{role:"system",content:systemPrompt},{role:"user",content:`Комментарий пользователя:\n${commentText}`}],max_tokens:150,temperature:0.7})}); const data=await response.json(); if(!response.ok){console.error("OpenAI API error:",response.status,JSON.stringify(data));return null;} return data.choices?.[0]?.message?.content?.trim()||null; }
-async function postReply(parentCommentId,message){ const url=`https://graph.threads.net/v1.0/${parentCommentId}/replies`; const params=new URLSearchParams({message,access_token:THREADS_ACCESS_TOKEN}); const res=await fetch(`${url}?${params.toString()}`,{method:"POST"}); const data=await res.json(); if(!res.ok||data.error){console.error("Threads API error:",JSON.stringify(data.error||data));return null;} console.log("Threads reply posted",JSON.stringify({id:data.id||null})); return data.id; }
-app.listen(PORT,()=>console.log(`Bot listening on port ${PORT}; model=${OPENAI_MODEL}; diagnostics=v3`));
+const app=express(); app.use(bodyParser.json());
+const {THREADS_ACCESS_TOKEN,THREADS_USER_ID,THREADS_VERIFY_TOKEN,AIRTABLE_API_KEY,AIRTABLE_BASE_ID,OPENAI_API_KEY,OPENAI_MODEL="gpt-5.6-luna",PORT=3000}=process.env;
+const AIRTABLE_URL=`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}`;
+const seenReplies=new Map(), DEDUPE_TTL_MS=10*60*1000;
+function isDuplicate(id){const now=Date.now();for(const[k,t]of seenReplies)if(now-t>DEDUPE_TTL_MS)seenReplies.delete(k);if(seenReplies.has(String(id)))return true;seenReplies.set(String(id),now);return false;}
+app.get("/",(_q,r)=>r.status(200).send("Leo Akastel Threads bot is running"));
+app.get("/health",(_q,r)=>r.status(200).json({ok:true}));
+app.get("/webhook",(q,r)=>{const m=q.query["hub.mode"],t=q.query["hub.verify_token"],c=q.query["hub.challenge"];if(m==="subscribe"&&t===THREADS_VERIFY_TOKEN){console.log("Webhook verified");return r.status(200).send(c)}return r.sendStatus(403)});
+app.post("/webhook",async(q,r)=>{r.sendStatus(200);try{const values=Array.isArray(q.body?.values)?q.body.values:[];console.log("Webhook POST",JSON.stringify({topic:q.body?.topic||null,target_id:q.body?.target_id||null,valueCount:values.length}));for(const item of values){if(!["replies","comments"].includes(item?.field))continue;const v=item?.value;if(!v)continue;if(v.id&&isDuplicate(v.id)){console.log("Reply skipped: duplicate",String(v.id));continue}await handleComment(v)}for(const e of q.body?.entry||[])for(const ch of e?.changes||[]){if(!["replies","comments"].includes(ch?.field))continue;const v=ch?.value;if(!v)continue;if(v.id&&isDuplicate(v.id)){console.log("Reply skipped: duplicate",String(v.id));continue}await handleComment(v)}}catch(e){console.error("Webhook processing error:",e)}});
+async function handleComment(c){const commentId=c?.id||c?.reply_id||c?.media?.id,text=c?.text||c?.reply_text||c?.media?.text,author=c?.username||c?.from?.username||c?.user?.username||"unknown",authorId=c?.user_id||c?.from?.id||c?.user?.id||null,mediaId=c?.replied_to?.id||c?.root_post?.id||c?.media_id||c?.media?.id||null;console.log("Parsed reply",JSON.stringify({hasId:!!commentId,hasText:!!text,author}));if(!commentId||!text)return;if(authorId&&THREADS_USER_ID&&String(authorId)===String(THREADS_USER_ID))return;const context=await getContext();const replyText=await generateReply(text,context);if(!replyText)return;console.log("AI reply generated",JSON.stringify({length:replyText.length}));const replyId=await postReply(commentId,replyText);await logInteraction({commentId,author,commentText:text,replyText,replyId,mediaId})}
+async function getContext(){for(const table of ["KnowledgeBase","Knowledge Base"]){const res=await fetch(`${AIRTABLE_URL}/${encodeURIComponent(table)}?maxRecords=20`,{headers:{Authorization:`Bearer ${AIRTABLE_API_KEY}`}});if(res.ok){const d=await res.json();console.log("Airtable KB loaded",JSON.stringify({table,records:d.records?.length||0}));return(d.records||[]).map(r=>{const f=r.fields||{},q=f.Question||f.Title||f.Topic||"",a=f.Answer||f.Content||f.Context||"";return q||a?`- ${q}${q&&a?": ":""}${a}`:""}).filter(Boolean).join("\n")}if(res.status!==404)console.error("Airtable KnowledgeBase error:",res.status,await res.text())}console.log("Airtable KB unavailable; continuing without context");return ""}
+async function logInteraction(row){const res=await fetch(`${AIRTABLE_URL}/Comments`,{method:"POST",headers:{Authorization:`Bearer ${AIRTABLE_API_KEY}`,"Content-Type":"application/json"},body:JSON.stringify({fields:{"Comment ID":row.commentId,Author:row.author,"Comment Text":row.commentText,"Reply Text":row.replyText,"Reply ID":row.replyId||"","Media ID":row.mediaId||""}})});if(!res.ok)console.error("Airtable log error:",res.status,await res.text())}
+async function generateReply(commentText,knowledgeBase){const systemPrompt=`Ты — ассистент, который отвечает на комментарии под постами в Threads от имени бренда/аккаунта Leo Akastel | Business & Tech.\n\nТОН И СТИЛЬ:\n- Дружелюбно, живо, без канцелярита\n- Коротко: 1-2 предложения максимум\n- Максимум 1 emoji, если уместно\n- Пиши на языке комментария\n- Обращайся на \"ты\" для неформального комментария, на \"вы\" для формального\n\nПРАВИЛА:\n1. Используй базу знаний, если она отвечает на вопрос; не выдумывай факты.\n2. На эмоцию/благодарность отвечай коротко и тепло.\n3. На токсичный комментарий отвечай нейтрально, без конфликта.\n4. Если данных недостаточно — предложи написать в личные сообщения.\n5. Не выдумывай цифры, даты и обещания.\n\nБАЗА ЗНАНИЙ:\n${knowledgeBase||"Релевантная база знаний недоступна."}\n\nОтветь только текстом реплая.`;const res=await fetch("https://api.openai.com/v1/chat/completions",{method:"POST",headers:{Authorization:`Bearer ${OPENAI_API_KEY}`,"Content-Type":"application/json"},body:JSON.stringify({model:OPENAI_MODEL,messages:[{role:"system",content:systemPrompt},{role:"user",content:`Комментарий пользователя:\n${commentText}`}],max_completion_tokens:150})});const d=await res.json();if(!res.ok){console.error("OpenAI API error:",res.status,JSON.stringify(d));return null}return d.choices?.[0]?.message?.content?.trim()||null}
+async function postReply(parentCommentId,message){const params=new URLSearchParams({message,access_token:THREADS_ACCESS_TOKEN});const res=await fetch(`https://graph.threads.net/v1.0/${parentCommentId}/replies?${params}`,{method:"POST"});const d=await res.json();if(!res.ok||d.error){console.error("Threads API error:",JSON.stringify(d.error||d));return null}console.log("Threads reply posted",JSON.stringify({id:d.id||null}));return d.id}
+app.listen(PORT,()=>console.log(`Bot listening on port ${PORT}; model=${OPENAI_MODEL}; diagnostics=v4`));
