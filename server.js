@@ -156,7 +156,7 @@ Use this knowledge base if relevant:\n${context}`;
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini",
+      model: "gpt-5.6-luna",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: commentText },
