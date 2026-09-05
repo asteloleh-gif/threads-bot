@@ -1,4 +1,4 @@
-/**
+/** 
  * Leo Akastel | Business & Tech — Threads Auto-Reply Bot
  */
 const express = require("express");
@@ -39,7 +39,7 @@ const threads = createThreadsAdapter({
 });
 
 app.get("/", (_q, r) => r.status(200).send("Leo Akastel Threads bot is running"));
-app.get("/health", (_q, r) => r.status(200).json({ ok: true, enabled: safety.isEnabled(), dryRun: safety.isDryRun() }));
+app.get("/health", (_q, r) => r.status(200).json({ ok: true, enabled: safety.isEnabled(), dryRun: safety.isDryRun(), ambiguousPending: safety.ambiguousCount() }));
 
 app.get("/webhook", (q, r) => {
   const m = q.query["hub.mode"], t = q.query["hub.verify_token"], c = q.query["hub.challenge"];
@@ -120,10 +120,15 @@ async function handleComment(c) {
     return;
   }
 
+  // Reserved synchronously (no await since the last check above) so a burst of concurrent
+  // *different* comments can't all pass the limit checks before any of them counts.
+  const rateReservation = safety.reserveRateLimitSlot({ userKey, rootId });
+
   try {
     const context = await getContext();
     const replyText = await generateReply(text, context);
     if (!replyText) {
+      safety.releaseRateLimitSlot(rateReservation);
       safety.releaseComment(commentId);
       return;
     }
@@ -137,16 +142,30 @@ async function handleComment(c) {
       return;
     }
 
-    const replyId = await threads.reply(commentId, replyText);
-    if (!replyId) {
+    const result = await threads.reply(commentId, replyText);
+
+    if (result.status === "published") {
+      safety.recordSuccessfulReply({ sourceCommentId: commentId, publishedReplyId: result.id, userKey, rootId });
       safety.releaseComment(commentId);
+      await logInteraction({ commentId, author: author || authorId || "unknown", commentText: text, replyText, replyId: result.id, mediaId: rootId });
       return;
     }
 
-    safety.recordSuccessfulReply({ sourceCommentId: commentId, publishedReplyId: replyId, userKey, rootId });
+    if (result.status === "ambiguous") {
+      // Do NOT release the comment: a webhook redelivery for this commentId must be
+      // treated as a duplicate, not retried, since we can't rule out that the publish
+      // already succeeded. Rate-limit slot is kept counted for the same reason.
+      safety.markAmbiguous(commentId);
+      console.error("Reply outcome ambiguous - holding comment, manual review recommended", JSON.stringify({ sourceCommentId: String(commentId) }));
+      return;
+    }
+
+    // result.status === "failed": nothing was published, safe to release for retry.
+    safety.releaseRateLimitSlot(rateReservation);
     safety.releaseComment(commentId);
-    await logInteraction({ commentId, author: author || authorId || "unknown", commentText: text, replyText, replyId, mediaId: rootId });
+    console.log("Reply skipped: publish failed", String(commentId));
   } catch (e) {
+    safety.releaseRateLimitSlot(rateReservation);
     safety.releaseComment(commentId);
     console.error("Comment handling error:", e?.message || String(e));
   }
@@ -188,7 +207,7 @@ async function logInteraction(row) {
 }
 
 async function generateReply(commentText, knowledgeBase) {
-  const systemPrompt = `Ты — ассистент, который отвечает на комментарии под постами в Threads от имени бренда/аккаунта Leo Akastel | Business & Tech.\n\nТОН И СТИЛЬ:\n- Дружелюбно, живо, без канцелярита\n- Коротко: 1-2 предложения максимум\n- Максимум 1 emoji, если уместно\n- Пиши на языке комментария\n- Обращайся на \"ты\" для неформального комментария, на \"вы\" для формального\n\nПРАВИЛА:\n1. Используй базу знаний, если она отвечает на вопрос; не выдумывай факты.\n2. На эмоцию/благодарность отвечай коротко и тепло.\n3. На токсичный комментарий отвечай нейтрально, без конфликта.\n4. Если данных недостаточно — предложи написать в личные сообщения.\n5. Не выдумывай цифры, даты и обещания.\n\nБАЗА ЗНАНИЙ:\n${knowledgeBase || "Релевантная база знаний недоступна."}\n\nОтветь только текстом реплая.`;
+  const systemPrompt = `Ты — ассистент, который отвечает на комментарии под постами в Threads от имени бренда/аккаунта Leo Akastel | Business & Tech.\n\nТОН И СТИЛЬ:\n- Дружелюбно, живо, без канцелярита\n- Коротко: 1-2 предложения максимум\n- Максимум 1 emoji, если уместно\n- Пиши на языке комментария\n- Обращайся на "ты" для неформального комментария, на "вы" для формального\n\nПРАВИЛА:\n1. Используй базу знаний, если она отвечает на вопрос; не выдумывай факты.\n2. На эмоцию/благодарность отвечай коротко и тепло.\n3. На токсичный комментарий отвечай нейтрально, без конфликта.\n4. Если данных недостаточно — предложи написать в личные сообщения.\n5. Не выдумывай цифры, даты и обещания.\n\nБАЗА ЗНАНИЙ:\n${knowledgeBase || "Релевантная база знаний недоступна."}\n\nОтветь только текстом реплая.`;
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
@@ -202,4 +221,12 @@ async function generateReply(commentText, knowledgeBase) {
   return d.choices?.[0]?.message?.content?.trim() || null;
 }
 
-app.listen(PORT, () => console.log(`Bot listening on port ${PORT}; model=${OPENAI_MODEL}; safety=v6; enabled=${safety.isEnabled()}; dryRun=${safety.isDryRun()}`));
+// Only auto-start the HTTP server when run directly (node server.js / npm start).
+// When required as a module (e.g. by the local test suite in test/), this is skipped so
+// tests can exercise the real handleComment/safety/threads logic without binding a port
+// or needing real credentials.
+if (require.main === module) {
+  app.listen(PORT, () => console.log(`Bot listening on port ${PORT}; model=${OPENAI_MODEL}; safety=v6; enabled=${safety.isEnabled()}; dryRun=${safety.isDryRun()}`));
+}
+
+module.exports = { app, handleComment, safety, threads, getContext, generateReply };
