@@ -132,6 +132,7 @@ async function handleComment(c) {
 
     if (safety.isDryRun()) {
       console.log("DRY RUN: would reply", JSON.stringify({ sourceCommentId: String(commentId), length: replyText.length }));
+      safety.recordSuccessfulReply({ sourceCommentId: commentId, publishedReplyId: null, userKey, rootId });
       safety.releaseComment(commentId);
       return;
     }
