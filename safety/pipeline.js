@@ -1,7 +1,7 @@
 function createSafetyPipeline({ threadsUserId, selfUsername = "leoakastel", selfUserId = "27979923121676296", botEnabled = "false", botDryRun = "true" }) {
   const USER_COOLDOWN_MS = 20 * 1000;
   const CONVERSATION_WINDOW_MS = 24 * 60 * 60 * 1000;
-  const CONVERSATION_MAX_REPLIES = 10;
+  const CONVERSATION_MAX_REPLIES = 3;
   const GLOBAL_WINDOW_MS = 24 * 60 * 60 * 1000;
   const GLOBAL_MAX_REPLIES = 50;
   const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
