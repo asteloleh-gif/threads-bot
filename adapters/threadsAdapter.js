@@ -2,11 +2,7 @@ const fetch = require("node-fetch");
 
 const DEFAULT_FETCH_TIMEOUT_MS = 20000;
 
-function createThreadsAdapter({ accessToken, userId, onPublishedReplyId }) {
-  // Retries on 429/5xx (as before) AND now also on thrown network errors/timeouts, so a
-  // transient blip doesn't immediately surface as a failure with zero retries. Applies a
-  // request timeout by default (node-fetch v2 supports `timeout` in ms) so a hung request
-  // becomes a bounded, classifiable failure instead of hanging forever.
+function createThreadsAdapter({ accessToken, userId }) {
   async function fetchWithRetry(url, options, maxAttempts = 3) {
     const opts = { timeout: DEFAULT_FETCH_TIMEOUT_MS, ...options };
     let lastErr;
@@ -41,42 +37,59 @@ function createThreadsAdapter({ accessToken, userId, onPublishedReplyId }) {
     return events;
   }
 
-  function getAuthorId(c) {
-    return c?.user_id || c?.from?.id || c?.user?.id || c?.owner_id || null;
-  }
-
-  function getAuthorUsername(c) {
-    return c?.username || c?.from?.username || c?.user?.username || null;
-  }
-
+  function getAuthorId(c) { return c?.user_id || c?.from?.id || c?.user?.id || c?.owner_id || null; }
+  function getAuthorUsername(c) { return c?.username || c?.from?.username || c?.user?.username || null; }
+  function getCommentId(c) { return c?.id || c?.reply_id || c?.media?.id || null; }
+  function getCommentText(c) { return c?.text || c?.reply_text || c?.media?.text || null; }
+  function getParentId(c) { return c?.replied_to?.id || c?.parent?.id || c?.parent_id || null; }
+  function getParentAuthorId(c) { return c?.replied_to?.user_id || c?.replied_to?.from?.id || c?.parent?.user_id || c?.parent?.from?.id || c?.parent_user_id || null; }
+  function getParentAuthorUsername(c) { return c?.replied_to?.username || c?.replied_to?.from?.username || c?.parent?.username || c?.parent?.from?.username || c?.parent_username || null; }
   function getRootPostId(c) {
-    return c?.root_post?.id || c?.replied_to?.id || c?.parent_id || c?.media_id || null;
+    return c?.root_post?.id || c?.root_post_id || c?.media_id || c?.media?.root_post?.id || getParentId(c) || null;
   }
 
-  function getCommentId(c) {
-    return c?.id || c?.reply_id || c?.media?.id || null;
+  async function resolveParentAuthor(c, { ownerUsername, ownerUserId, lookupEnabled = true } = {}) {
+    const parentId = getParentId(c);
+    const rootId = getRootPostId(c);
+    const payloadAuthorId = getParentAuthorId(c);
+    const payloadUsername = getParentAuthorUsername(c);
+    if (!parentId) return { parentId: null, parentAuthorId: null, parentAuthorUsername: null, source: "none" };
+    if (payloadAuthorId || payloadUsername) {
+      return { parentId, parentAuthorId: payloadAuthorId, parentAuthorUsername: payloadUsername, source: "webhook" };
+    }
+    if (rootId && String(parentId) === String(rootId)) {
+      return { parentId, parentAuthorId: ownerUserId || userId || null, parentAuthorUsername: ownerUsername || null, source: "root-owner" };
+    }
+    if (!lookupEnabled || !accessToken) return { parentId, parentAuthorId: null, parentAuthorUsername: null, source: "unknown" };
+
+    try {
+      const fields = "id,username,user_id";
+      const url = `https://graph.threads.net/v1.0/${encodeURIComponent(parentId)}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(accessToken)}`;
+      const res = await fetchWithRetry(url, { method: "GET" }, 2);
+      let data = null;
+      try { data = await res.json(); } catch (_) {}
+      if (!res.ok || data?.error) {
+        console.warn("Threads parent lookup failed", JSON.stringify({ parentId: String(parentId), status: res.status, code: data?.error?.code || null }));
+        return { parentId, parentAuthorId: null, parentAuthorUsername: null, source: "lookup-failed" };
+      }
+      return {
+        parentId,
+        parentAuthorId: data?.user_id || null,
+        parentAuthorUsername: data?.username || null,
+        source: "api",
+      };
+    } catch (e) {
+      console.warn("Threads parent lookup error", JSON.stringify({ parentId: String(parentId), error: e?.message || String(e) }));
+      return { parentId, parentAuthorId: null, parentAuthorUsername: null, source: "lookup-error" };
+    }
   }
 
-  function getCommentText(c) {
-    return c?.text || c?.reply_text || c?.media?.text || null;
-  }
-
-  // Creation-step failures (including network errors) are always safe to treat as a plain
-  // failure: if we never receive a creationId, we cannot call publish with it, so at worst
-  // an orphaned unpublished container is left on Meta's side - never a duplicate reply.
   async function createReply(parentCommentId, message) {
     if (!accessToken || !userId) {
       console.error("Threads config error: access token or user id missing");
       return null;
     }
-
-    const createParams = new URLSearchParams({
-      media_type: "TEXT",
-      text: message,
-      reply_to_id: String(parentCommentId),
-      access_token: accessToken,
-    });
-
+    const createParams = new URLSearchParams({ media_type: "TEXT", text: message, reply_to_id: String(parentCommentId), access_token: accessToken });
     let createRes;
     try {
       createRes = await fetchWithRetry(`https://graph.threads.net/v1.0/me/threads?${createParams}`, { method: "POST" });
@@ -84,51 +97,30 @@ function createThreadsAdapter({ accessToken, userId, onPublishedReplyId }) {
       console.error("Threads container creation network error:", e?.message || String(e));
       return null;
     }
-
     let createData;
-    try {
-      createData = await createRes.json();
-    } catch (e) {
-      console.error("Threads container creation error: unparseable response", createRes.status);
-      return null;
-    }
-
+    try { createData = await createRes.json(); }
+    catch (_) { console.error("Threads container creation error: unparseable response", createRes.status); return null; }
     if (!createRes.ok || createData.error) {
       console.error("Threads container creation error:", createRes.status, createData?.error?.code || "unknown_error");
       return null;
     }
     const creationId = createData.id;
-    if (!creationId) {
-      console.error("Threads container creation error: missing creation id");
-      return null;
-    }
+    if (!creationId) { console.error("Threads container creation error: missing creation id"); return null; }
     console.log("Threads reply container created", JSON.stringify({ id: creationId }));
     return creationId;
   }
 
-  // Publish-step outcome is reported as a structured status instead of just an id/null,
-  // because this is the step where "we don't know if it worked" is genuinely dangerous:
-  // if the request reached Meta and was processed but our read of the response failed
-  // (network error, timeout, unparseable body after a 2xx), a naive retry could publish a
-  // second reply to the same source comment. Callers must NOT auto-retry on "ambiguous".
   async function publishReply(creationId) {
     await new Promise(r => setTimeout(r, 5000));
     const publishParams = new URLSearchParams({ creation_id: String(creationId), access_token: accessToken });
-
     let publishRes;
-    // IMPORTANT: never retry a thrown network error on the publish step. Once this POST
-    // has been dispatched, Meta may have completed the publish even if we never receive
-    // the response. Retrying that ambiguous operation can itself create a duplicate reply.
-    // Definitive HTTP 429/5xx responses remain bounded-retryable because we did receive
-    // an explicit response from Meta.
     try {
       const url = `https://graph.threads.net/v1.0/${encodeURIComponent(userId)}/threads_publish?${publishParams}`;
       const opts = { method: "POST", timeout: DEFAULT_FETCH_TIMEOUT_MS };
       const maxAttempts = 3;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        try {
-          publishRes = await fetch(url, opts);
-        } catch (e) {
+        try { publishRes = await fetch(url, opts); }
+        catch (e) {
           console.error("Threads publish network error (ambiguous outcome):", e?.message || String(e));
           return { status: "ambiguous" };
         }
@@ -143,9 +135,8 @@ function createThreadsAdapter({ accessToken, userId, onPublishedReplyId }) {
     }
 
     let publishData;
-    try {
-      publishData = await publishRes.json();
-    } catch (e) {
+    try { publishData = await publishRes.json(); }
+    catch (_) {
       if (publishRes.ok) {
         console.error("Threads publish response unparseable after success status (ambiguous outcome)");
         return { status: "ambiguous" };
@@ -153,24 +144,19 @@ function createThreadsAdapter({ accessToken, userId, onPublishedReplyId }) {
       console.error("Threads publish error: unparseable error body", publishRes.status);
       return { status: "failed" };
     }
-
     if (!publishRes.ok || publishData.error) {
       console.error("Threads publish error:", publishRes.status, publishData?.error?.code || "unknown_error");
       return { status: "failed" };
     }
-
     const publishedId = publishData.id || null;
     if (!publishedId) {
       console.error("Threads publish error: missing published id despite success response (ambiguous outcome)");
       return { status: "ambiguous" };
     }
-
-    if (onPublishedReplyId) onPublishedReplyId(publishedId);
     console.log("Threads reply posted", JSON.stringify({ id: publishedId }));
     return { status: "published", id: publishedId };
   }
 
-  // Returns { status: "published", id } | { status: "failed" } | { status: "ambiguous" }.
   async function reply(parentCommentId, message) {
     const creationId = await createReply(parentCommentId, message);
     if (!creationId) return { status: "failed" };
@@ -184,6 +170,10 @@ function createThreadsAdapter({ accessToken, userId, onPublishedReplyId }) {
     getRootPostId,
     getCommentId,
     getCommentText,
+    getParentId,
+    getParentAuthorId,
+    getParentAuthorUsername,
+    resolveParentAuthor,
     createReply,
     publishReply,
     reply,
