@@ -1,6 +1,6 @@
 /**
  * Leo Akastel | Business & Tech — Threads Auto-Reply Bot
- * Astel Reply Engine v9.1
+ * Astel Reply Engine v9.1.1a
  */
 const express = require("express");
 const bodyParser = require("body-parser");
@@ -8,6 +8,7 @@ const fetch = require("node-fetch");
 const { createThreadsAdapter } = require("./adapters/threadsAdapter");
 const { createSafetyPipeline } = require("./safety/pipeline");
 const { routeComment } = require("./router/conversationRouter");
+const { resolveParentForRouting } = require("./router/parentResolver");
 const { loadPolicy } = require("./config/policy");
 require("dotenv").config();
 
@@ -33,7 +34,7 @@ const safety = createSafetyPipeline({
 });
 const threads = createThreadsAdapter({ accessToken: THREADS_ACCESS_TOKEN, userId: THREADS_USER_ID });
 
-app.get("/", (_q, r) => r.status(200).send("Leo Akastel Threads bot is running — v9.1"));
+app.get("/", (_q, r) => r.status(200).send("Leo Akastel Threads bot is running — v9.1.1a"));
 app.get("/health", async (_q, r) => {
   let ambiguousPending = null;
   try { if (safety.isReady()) ambiguousPending = await safety.ambiguousCount(); } catch (_) {}
@@ -41,7 +42,7 @@ app.get("/health", async (_q, r) => {
   const ok = !policy.redisRequired || redis.connected;
   r.status(ok ? 200 : 503).json({
     ok,
-    version: "v9.1",
+    version: "v9.1.1a",
     enabled: safety.isEnabled(),
     dryRun: safety.isDryRun(),
     redis,
@@ -94,11 +95,23 @@ async function handleComment(c) {
     return console.error("Reply skipped", JSON.stringify({ reason: "SAFETY_STORE_UNAVAILABLE", sourceCommentId: String(commentId), error: e?.message || String(e) }));
   }
 
-  const parent = await threads.resolveParentAuthor(c, {
-    ownerUsername: THREADS_USERNAME,
-    ownerUserId: THREADS_USER_ID,
-    lookupEnabled: policy.parentLookupEnabled,
-  });
+  let parent;
+  try {
+    parent = await resolveParentForRouting(c, {
+      safety,
+      threads,
+      ownerUsername: THREADS_USERNAME,
+      ownerUserId: THREADS_USER_ID,
+      lookupEnabled: policy.parentLookupEnabled,
+    });
+  } catch (e) {
+    return console.error("Reply skipped", JSON.stringify({
+      reason: "SAFETY_STORE_UNAVAILABLE",
+      sourceCommentId: String(commentId),
+      error: e?.message || String(e),
+    }));
+  }
+
   const route = routeComment({
     authorId,
     authorUsername: author,
@@ -117,6 +130,15 @@ async function handleComment(c) {
       author,
       rootId: String(rootId),
       parentId: parent.parentId ? String(parent.parentId) : null,
+      parentSource: parent.source,
+    }));
+  }
+
+  if (parent.source === "redis-bot-id") {
+    console.log("Parent resolved locally", JSON.stringify({
+      sourceCommentId: String(commentId),
+      parentId: String(parent.parentId),
+      route: route.reason,
       parentSource: parent.source,
     }));
   }
@@ -263,7 +285,7 @@ async function generateReply(commentText, knowledgeBase, { closeConversation = f
 
 async function start() {
   await safety.init();
-  app.listen(PORT, () => console.log(`Bot listening on port ${PORT}; model=${OPENAI_MODEL}; safety=v9.1; enabled=${safety.isEnabled()}; dryRun=${safety.isDryRun()}; limits=${policy.cooldownSeconds}s/${policy.normalReplyLimit}perConversation/${policy.globalDailyLimit}daily; redis=${safety.isReady()}`));
+  app.listen(PORT, () => console.log(`Bot listening on port ${PORT}; model=${OPENAI_MODEL}; safety=v9.1.1a; enabled=${safety.isEnabled()}; dryRun=${safety.isDryRun()}; limits=${policy.cooldownSeconds}s/${policy.normalReplyLimit}perConversation/${policy.globalDailyLimit}daily; redis=${safety.isReady()}`));
 }
 
 if (require.main === module) {
@@ -273,4 +295,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, handleComment, safety, threads, policy, getContext, generateReply, start };
+module.exports = { app, handleComment, safety, threads, policy, getContext, generateReply, start, resolveParentForRouting };
