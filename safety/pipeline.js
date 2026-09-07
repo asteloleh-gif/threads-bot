@@ -1,5 +1,6 @@
 const { createClient } = require("redis");
 const { deriveGraphNode, GRAPH_STATUS } = require("../graph/conversationGraph");
+const { reconstructBranchMemory } = require("../memory/reconstructBranchMemory");
 
 function createSafetyPipeline({
   threadsUserId,
@@ -11,17 +12,12 @@ function createSafetyPipeline({
   policy,
   namespace = "astel:v91",
 }) {
-  const p = policy || {
-    normalReplyLimit: 3,
-    cooldownSeconds: 20,
-    conversationResetHours: 24,
-    globalDailyLimit: 50,
-    redisRequired: true,
-  };
+  const p = policy || { normalReplyLimit: 3, cooldownSeconds: 20, conversationResetHours: 24, globalDailyLimit: 50, redisRequired: true };
   const CONVERSATION_WINDOW_MS = p.conversationResetHours * 60 * 60 * 1000;
   const GLOBAL_WINDOW_MS = 24 * 60 * 60 * 1000;
   const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
   const COOLDOWN_MS = p.cooldownSeconds * 1000;
+  const BRANCH_LEASE_MS = Math.max(5000, Number(process.env.BRANCH_LEASE_MS || 45000));
   const ttlSeconds = Math.ceil(IDEMPOTENCY_TTL_MS / 1000);
   const zsetTtlSeconds = Math.ceil(Math.max(CONVERSATION_WINDOW_MS, GLOBAL_WINDOW_MS, IDEMPOTENCY_TTL_MS) / 1000) + 3600;
   const graphTtlSeconds = Math.max(7 * 24 * 60 * 60, Math.ceil(CONVERSATION_WINDOW_MS / 1000) + 3600);
@@ -38,6 +34,7 @@ function createSafetyPipeline({
   const convSuccessKey = ck => `${namespace}:conv:${keySafe(ck)}:success`;
   const convPendingKey = ck => `${namespace}:conv:${keySafe(ck)}:pending`;
   const cooldownKey = ck => `${namespace}:conv:${keySafe(ck)}:cooldown`;
+  const branchLeaseKey = bk => `${namespace}:branch:${keySafe(bk)}:lease`;
   const globalSuccessKey = `${namespace}:global:success`;
   const globalPendingKey = `${namespace}:global:pending`;
   const ambiguousKey = `${namespace}:ambiguous`;
@@ -45,85 +42,44 @@ function createSafetyPipeline({
   const graphPendingKey = parentId => `${namespace}:graph:pending:${keySafe(parentId)}`;
 
   async function init() {
-    if (!redisUrl) {
-      lastError = "REDIS_URL missing";
-      if (p.redisRequired) throw new Error(lastError);
-      return false;
-    }
+    if (!redisUrl) { lastError = "REDIS_URL missing"; if (p.redisRequired) throw new Error(lastError); return false; }
     client = createClient({ url: redisUrl });
-    client.on("error", err => {
-      ready = false;
-      lastError = err?.message || String(err);
-      console.error("Redis error:", lastError);
-    });
+    client.on("error", err => { ready = false; lastError = err?.message || String(err); console.error("Redis error:", lastError); });
     client.on("ready", () => { ready = true; lastError = null; });
     client.on("end", () => { ready = false; });
-    await client.connect();
-    await client.ping();
-    ready = true;
+    await client.connect(); await client.ping(); ready = true;
     console.log("Redis safety connected", JSON.stringify({ namespace }));
     return true;
   }
 
-  function assertReady() {
-    if (!client || !ready) throw new Error(`Redis safety unavailable${lastError ? `: ${lastError}` : ""}`);
-  }
-
+  function assertReady() { if (!client || !ready) throw new Error(`Redis safety unavailable${lastError ? `: ${lastError}` : ""}`); }
   function isReady() { return ready; }
   function health() { return { connected: ready, required: !!p.redisRequired, lastError }; }
   function isSelfAuthored({ authorId, authorUsername }) {
     const u = normalizeUsername(authorUsername);
-    return u === normalizeUsername(selfUsername) ||
-      (authorId && String(authorId) === String(selfUserId)) ||
-      (authorId && threadsUserId && String(authorId) === String(threadsUserId));
+    return u === normalizeUsername(selfUsername) || (authorId && String(authorId) === String(selfUserId)) || (authorId && threadsUserId && String(authorId) === String(threadsUserId));
   }
-  function getUserKey({ authorId, authorUsername }) {
-    if (authorId) return `id:${String(authorId)}`;
-    const u = normalizeUsername(authorUsername);
-    return u ? `username:${u}` : null;
-  }
-  function getConversationKey({ userKey, rootId }) {
-    return userKey && rootId ? `${userKey}|thread:${String(rootId)}` : null;
-  }
+  function getUserKey({ authorId, authorUsername }) { if (authorId) return `id:${String(authorId)}`; const u = normalizeUsername(authorUsername); return u ? `username:${u}` : null; }
+  function getConversationKey({ userKey, rootId }) { return userKey && rootId ? `${userKey}|thread:${String(rootId)}` : null; }
 
-  async function getSourceStatus(commentId) {
-    assertReady();
-    return commentId ? client.get(sourceKey(commentId)) : null;
-  }
-  async function isBotGeneratedId(id) {
-    assertReady();
-    return id ? (await client.exists(botKey(id))) === 1 : false;
-  }
-  async function markBotGeneratedId(id) {
-    assertReady();
-    if (id) await client.set(botKey(id), "1", { EX: ttlSeconds });
-  }
+  async function getSourceStatus(commentId) { assertReady(); return commentId ? client.get(sourceKey(commentId)) : null; }
+  async function isBotGeneratedId(id) { assertReady(); return id ? (await client.exists(botKey(id))) === 1 : false; }
+  async function markBotGeneratedId(id) { assertReady(); if (id) await client.set(botKey(id), "1", { EX: ttlSeconds }); }
 
   async function getGraphNode(commentId) {
-    assertReady();
-    if (!commentId) return null;
-    const raw = await client.get(graphNodeKey(commentId));
-    if (!raw) return null;
-    try { return JSON.parse(raw); }
-    catch (_) { return null; }
+    assertReady(); if (!commentId) return null;
+    const raw = await client.get(graphNodeKey(commentId)); if (!raw) return null;
+    try { return JSON.parse(raw); } catch (_) { return null; }
   }
-
-  async function persistGraphNode(node) {
-    await client.set(graphNodeKey(node.commentId), JSON.stringify(node), { EX: graphTtlSeconds });
-  }
+  async function persistGraphNode(node) { assertReady(); await client.set(graphNodeKey(node.commentId), JSON.stringify(node), { EX: graphTtlSeconds }); }
 
   async function reconcileGraphChildren(parentId, parentNode, depth = 0) {
     if (!parentId || !parentNode?.branchKey || depth > 20) return;
     const pendingKey = graphPendingKey(parentId);
-    const childIds = await client.sMembers(pendingKey);
-    if (!childIds.length) return;
-
+    const childIds = await client.sMembers(pendingKey); if (!childIds.length) return;
     for (const childId of childIds) {
       const child = await getGraphNode(childId);
-      if (!child) {
-        await client.sRem(pendingKey, childId);
-        continue;
-      }
+      if (!child) { await client.sRem(pendingKey, childId); continue; }
       if (!child.branchKey) {
         child.branchKey = parentNode.branchKey;
         child.relationshipStatus = GRAPH_STATUS.RESOLVED;
@@ -134,54 +90,57 @@ function createSafetyPipeline({
       await client.sRem(pendingKey, childId);
       if (child.branchKey) await reconcileGraphChildren(child.commentId, child, depth + 1);
     }
-
     if ((await client.sCard(pendingKey)) === 0) await client.del(pendingKey);
   }
 
   async function recordGraphNode(input) {
     assertReady();
     if (!input?.commentId || !input?.rootId) throw new Error("graph node requires commentId and rootId");
-
     const parentNode = input.parentId ? await getGraphNode(input.parentId) : null;
     const existing = await getGraphNode(input.commentId);
     const node = deriveGraphNode({
-      ...existing,
-      ...input,
+      ...existing, ...input,
       text: input.text != null ? input.text : existing?.text,
       createdAt: existing?.createdAt || input.createdAt,
+      publishStatus: input.publishStatus != null ? input.publishStatus : existing?.publishStatus,
+      publishConfirmedAt: input.publishConfirmedAt != null ? input.publishConfirmedAt : existing?.publishConfirmedAt,
       parentNode,
       ownerUserId: input.ownerUserId || threadsUserId || selfUserId,
       ownerUsername: input.ownerUsername || selfUsername,
     });
-
     await persistGraphNode(node);
-
     if (node.relationshipStatus === GRAPH_STATUS.PENDING_RELATIONSHIP && node.parentId) {
-      const pendingKey = graphPendingKey(node.parentId);
-      await client.sAdd(pendingKey, node.commentId);
-      await client.expire(pendingKey, graphTtlSeconds);
-    } else if (node.parentId) {
-      await client.sRem(graphPendingKey(node.parentId), node.commentId);
-    }
-
+      const pendingKey = graphPendingKey(node.parentId); await client.sAdd(pendingKey, node.commentId); await client.expire(pendingKey, graphTtlSeconds);
+    } else if (node.parentId) await client.sRem(graphPendingKey(node.parentId), node.commentId);
     if (node.branchKey) await reconcileGraphChildren(node.commentId, node);
     return node;
   }
 
+  async function getBranchMemory(commentId, options = {}) {
+    assertReady();
+    const currentNode = await getGraphNode(commentId);
+    if (!currentNode) return { messages: [], estimatedTokens: 0, reason: "GRAPH_NODE_MISSING", currentNode: null };
+    const memory = await reconstructBranchMemory({ currentNode, getGraphNode, ...options });
+    return { ...memory, currentNode };
+  }
+
+  async function acquireBranchLease(branchKey, ownerToken) {
+    assertReady();
+    if (!branchKey || !ownerToken) return false;
+    return (await client.set(branchLeaseKey(branchKey), String(ownerToken), { NX: true, PX: BRANCH_LEASE_MS })) === "OK";
+  }
+  async function verifyBranchLease(branchKey, ownerToken) { assertReady(); return !!branchKey && !!ownerToken && (await client.get(branchLeaseKey(branchKey))) === String(ownerToken); }
+  const RELEASE_LEASE_SCRIPT = `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end`;
+  async function releaseBranchLease(branchKey, ownerToken) {
+    assertReady(); if (!branchKey || !ownerToken) return false;
+    return Number(await client.eval(RELEASE_LEASE_SCRIPT, { keys: [branchLeaseKey(branchKey)], arguments: [String(ownerToken)] })) === 1;
+  }
+
   async function getConversationReplyCount(conversationKey) {
-    assertReady();
-    if (!conversationKey) return p.normalReplyLimit;
-    const now = Date.now();
-    const key = convSuccessKey(conversationKey);
-    await client.zRemRangeByScore(key, 0, now - CONVERSATION_WINDOW_MS);
-    return client.zCard(key);
+    assertReady(); if (!conversationKey) return p.normalReplyLimit;
+    const now = Date.now(), key = convSuccessKey(conversationKey); await client.zRemRangeByScore(key, 0, now - CONVERSATION_WINDOW_MS); return client.zCard(key);
   }
-  async function ambiguousCount() {
-    assertReady();
-    const now = Date.now();
-    await client.zRemRangeByScore(ambiguousKey, 0, now - IDEMPOTENCY_TTL_MS);
-    return client.zCard(ambiguousKey);
-  }
+  async function ambiguousCount() { assertReady(); const now = Date.now(); await client.zRemRangeByScore(ambiguousKey, 0, now - IDEMPOTENCY_TTL_MS); return client.zCard(ambiguousKey); }
 
   const RESERVE_SCRIPT = `
 local source = KEYS[1]
@@ -199,7 +158,6 @@ local cooldownMs = tonumber(ARGV[6])
 local reservationId = ARGV[7]
 local ttl = tonumber(ARGV[8])
 local zttl = tonumber(ARGV[9])
-
 if redis.call('EXISTS', source) == 1 then return {'DENY','DUPLICATE','0'} end
 redis.call('ZREMRANGEBYSCORE', convSuccess, 0, convCutoff)
 redis.call('ZREMRANGEBYSCORE', convPending, 0, convCutoff)
@@ -222,21 +180,11 @@ return {'ALLOW','RESERVED',tostring(convCount + 1)}
 `;
 
   async function reserve({ commentId, conversationKey }) {
-    assertReady();
-    if (!commentId || !conversationKey) return { allowed: false, reason: "INVALID_RESERVATION" };
-    const now = Date.now();
-    const reservationId = `${now}-${Math.random().toString(36).slice(2, 12)}`;
+    assertReady(); if (!commentId || !conversationKey) return { allowed: false, reason: "INVALID_RESERVATION" };
+    const now = Date.now(), reservationId = `${now}-${Math.random().toString(36).slice(2, 12)}`;
     const result = await client.eval(RESERVE_SCRIPT, {
-      keys: [
-        sourceKey(commentId), cooldownKey(conversationKey),
-        convSuccessKey(conversationKey), convPendingKey(conversationKey),
-        globalSuccessKey, globalPendingKey,
-      ],
-      arguments: [
-        String(now), String(now - CONVERSATION_WINDOW_MS), String(now - GLOBAL_WINDOW_MS),
-        String(p.normalReplyLimit), String(p.globalDailyLimit), String(COOLDOWN_MS),
-        reservationId, String(ttlSeconds), String(zsetTtlSeconds),
-      ],
+      keys: [sourceKey(commentId), cooldownKey(conversationKey), convSuccessKey(conversationKey), convPendingKey(conversationKey), globalSuccessKey, globalPendingKey],
+      arguments: [String(now), String(now - CONVERSATION_WINDOW_MS), String(now - GLOBAL_WINDOW_MS), String(p.normalReplyLimit), String(p.globalDailyLimit), String(COOLDOWN_MS), reservationId, String(ttlSeconds), String(zsetTtlSeconds)],
     });
     const [decision, reason, replyNumber] = result || [];
     if (decision !== "ALLOW") return { allowed: false, reason: reason || "RESERVATION_DENIED", replyNumber: Number(replyNumber || 0) };
@@ -264,49 +212,30 @@ redis.call('ZREM', ambiguous, ARGV[1])
 return 1
 `;
 
-  async function commitSuccess(reservation, publishedReplyId) {
-    assertReady();
-    if (!reservation?.reservationId) return false;
+  async function commitSuccess(reservation, publishedReplyId, publishedReplyText = null) {
+    assertReady(); if (!reservation?.reservationId) return false;
     const now = Date.now();
     const result = await client.eval(COMMIT_SCRIPT, {
-      keys: [
-        sourceKey(reservation.commentId), convPendingKey(reservation.conversationKey), convSuccessKey(reservation.conversationKey),
-        globalPendingKey, globalSuccessKey, botKey(publishedReplyId || "none"), ambiguousKey,
-      ],
+      keys: [sourceKey(reservation.commentId), convPendingKey(reservation.conversationKey), convSuccessKey(reservation.conversationKey), globalPendingKey, globalSuccessKey, botKey(publishedReplyId || "none"), ambiguousKey],
       arguments: [reservation.reservationId, String(now), String(publishedReplyId || ""), String(ttlSeconds)],
     });
     const committed = Number(result) === 1;
-
-    // Graph is a projection, not the source of publish truth. Never turn an
-    // already-committed publish into a failure because Graph projection failed.
     if (committed && publishedReplyId) {
       try {
         const sourceNode = await getGraphNode(reservation.commentId);
-        if (sourceNode) {
-          await recordGraphNode({
-            commentId: String(publishedReplyId),
-            parentId: sourceNode.commentId,
-            rootId: sourceNode.rootId,
-            authorId: threadsUserId || selfUserId,
-            username: selfUsername,
-            text: null,
-            isOwner: true,
-            isBotGenerated: true,
-            parentAuthorId: sourceNode.authorId || null,
-            parentAuthorUsername: sourceNode.username || null,
-            ownerUserId: threadsUserId || selfUserId,
-            ownerUsername: selfUsername,
-          });
-        }
+        if (sourceNode) await recordGraphNode({
+          commentId: String(publishedReplyId), parentId: sourceNode.commentId, rootId: sourceNode.rootId,
+          authorId: threadsUserId || selfUserId, username: selfUsername,
+          text: publishedReplyText == null ? null : String(publishedReplyText),
+          isOwner: true, isBotGenerated: true,
+          parentAuthorId: sourceNode.authorId || null, parentAuthorUsername: sourceNode.username || null,
+          ownerUserId: threadsUserId || selfUserId, ownerUsername: selfUsername,
+          publishStatus: "PUBLISHED", publishConfirmedAt: new Date(now).toISOString(),
+        });
       } catch (e) {
-        console.error("Conversation graph publish projection error", JSON.stringify({
-          sourceCommentId: String(reservation.commentId),
-          replyId: String(publishedReplyId),
-          error: e?.message || String(e),
-        }));
+        console.error("Conversation graph publish projection error", JSON.stringify({ sourceCommentId: String(reservation.commentId), replyId: String(publishedReplyId), error: e?.message || String(e) }));
       }
     }
-
     return committed;
   }
 
@@ -323,15 +252,9 @@ if redis.call('GET', cooldown) == ARGV[1] then redis.call('DEL', cooldown) end
 redis.call('DEL', source)
 return 1
 `;
-
   async function rollback(reservation) {
-    assertReady();
-    if (!reservation?.reservationId) return false;
-    const result = await client.eval(ROLLBACK_SCRIPT, {
-      keys: [sourceKey(reservation.commentId), cooldownKey(reservation.conversationKey), convPendingKey(reservation.conversationKey), globalPendingKey],
-      arguments: [reservation.reservationId],
-    });
-    return Number(result) === 1;
+    assertReady(); if (!reservation?.reservationId) return false;
+    return Number(await client.eval(ROLLBACK_SCRIPT, { keys: [sourceKey(reservation.commentId), cooldownKey(reservation.conversationKey), convPendingKey(reservation.conversationKey), globalPendingKey], arguments: [reservation.reservationId] })) === 1;
   }
 
   const AMBIGUOUS_SCRIPT = `
@@ -344,34 +267,20 @@ redis.call('ZADD', ambiguous, ARGV[2], ARGV[1])
 redis.call('EXPIRE', ambiguous, ARGV[3])
 return 1
 `;
-
   async function markAmbiguous(reservation) {
-    assertReady();
-    if (!reservation?.reservationId) return false;
-    const result = await client.eval(AMBIGUOUS_SCRIPT, {
-      keys: [sourceKey(reservation.commentId), ambiguousKey],
-      arguments: [reservation.reservationId, String(Date.now()), String(ttlSeconds)],
-    });
-    return Number(result) === 1;
+    assertReady(); if (!reservation?.reservationId) return false;
+    return Number(await client.eval(AMBIGUOUS_SCRIPT, { keys: [sourceKey(reservation.commentId), ambiguousKey], arguments: [reservation.reservationId, String(Date.now()), String(ttlSeconds)] })) === 1;
   }
 
-  async function quit() {
-    if (client?.isOpen) await client.quit();
-    ready = false;
-  }
+  async function quit() { if (client?.isOpen) await client.quit(); ready = false; }
 
   return {
     init, quit, health, isReady, isEnabled, isDryRun, isSelfAuthored,
     getUserKey, getConversationKey, getSourceStatus, isBotGeneratedId, markBotGeneratedId,
-    getGraphNode, recordGraphNode,
+    getGraphNode, recordGraphNode, getBranchMemory,
+    acquireBranchLease, verifyBranchLease, releaseBranchLease,
     getConversationReplyCount, reserve, commitSuccess, rollback, markAmbiguous, ambiguousCount,
-    limits: {
-      USER_COOLDOWN_MS: COOLDOWN_MS,
-      CONVERSATION_WINDOW_MS,
-      CONVERSATION_MAX_REPLIES: p.normalReplyLimit,
-      GLOBAL_WINDOW_MS,
-      GLOBAL_MAX_REPLIES: p.globalDailyLimit,
-    },
+    limits: { USER_COOLDOWN_MS: COOLDOWN_MS, CONVERSATION_WINDOW_MS, CONVERSATION_MAX_REPLIES: p.normalReplyLimit, GLOBAL_WINDOW_MS, GLOBAL_MAX_REPLIES: p.globalDailyLimit, BRANCH_LEASE_MS },
   };
 }
 
