@@ -23,6 +23,23 @@ async function resolveParentForRouting(c, {
     return parent;
   }
 
+  // v9.1.1c.1: for moderate reply webhooks, target_id is the owner media that
+  // received the reply. This is authoritative relationship data from the
+  // webhook envelope itself. It matters when the owner media is itself a reply:
+  // root_post.id points at the upstream conversation root, while replied_to.id
+  // points at Leo's reply post. Meta may reject direct lookup of that reply ID.
+  const webhookTargetId = threads.getWebhookTargetId?.(c) || null;
+  if (parentId && webhookTargetId && String(parentId) === String(webhookTargetId)) {
+    const parent = {
+      parentId,
+      parentAuthorId: ownerUserId || null,
+      parentAuthorUsername: ownerUsername || null,
+      source: "webhook-target-owner",
+    };
+    await recordGraphShadow(c, parent, { safety, threads, ownerUsername, ownerUserId });
+    return parent;
+  }
+
   // v9.1.1b is shadow-first by default. Graph routing must be explicitly
   // enabled later; until then Graph can be populated/observed without changing
   // production routing decisions.
