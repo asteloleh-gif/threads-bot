@@ -1,4 +1,5 @@
 const { createClient } = require("redis");
+const { deriveGraphNode, GRAPH_STATUS } = require("../graph/conversationGraph");
 
 function createSafetyPipeline({
   threadsUserId,
@@ -23,6 +24,7 @@ function createSafetyPipeline({
   const COOLDOWN_MS = p.cooldownSeconds * 1000;
   const ttlSeconds = Math.ceil(IDEMPOTENCY_TTL_MS / 1000);
   const zsetTtlSeconds = Math.ceil(Math.max(CONVERSATION_WINDOW_MS, GLOBAL_WINDOW_MS, IDEMPOTENCY_TTL_MS) / 1000) + 3600;
+  const graphTtlSeconds = Math.max(7 * 24 * 60 * 60, Math.ceil(CONVERSATION_WINDOW_MS / 1000) + 3600);
 
   let client = null;
   let ready = false;
@@ -39,6 +41,8 @@ function createSafetyPipeline({
   const globalSuccessKey = `${namespace}:global:success`;
   const globalPendingKey = `${namespace}:global:pending`;
   const ambiguousKey = `${namespace}:ambiguous`;
+  const graphNodeKey = id => `${namespace}:graph:node:${keySafe(id)}`;
+  const graphPendingKey = parentId => `${namespace}:graph:pending:${keySafe(parentId)}`;
 
   async function init() {
     if (!redisUrl) {
@@ -94,6 +98,76 @@ function createSafetyPipeline({
     assertReady();
     if (id) await client.set(botKey(id), "1", { EX: ttlSeconds });
   }
+
+  async function getGraphNode(commentId) {
+    assertReady();
+    if (!commentId) return null;
+    const raw = await client.get(graphNodeKey(commentId));
+    if (!raw) return null;
+    try { return JSON.parse(raw); }
+    catch (_) { return null; }
+  }
+
+  async function persistGraphNode(node) {
+    await client.set(graphNodeKey(node.commentId), JSON.stringify(node), { EX: graphTtlSeconds });
+  }
+
+  async function reconcileGraphChildren(parentId, parentNode, depth = 0) {
+    if (!parentId || !parentNode?.branchKey || depth > 20) return;
+    const pendingKey = graphPendingKey(parentId);
+    const childIds = await client.sMembers(pendingKey);
+    if (!childIds.length) return;
+
+    for (const childId of childIds) {
+      const child = await getGraphNode(childId);
+      if (!child) {
+        await client.sRem(pendingKey, childId);
+        continue;
+      }
+      if (!child.branchKey) {
+        child.branchKey = parentNode.branchKey;
+        child.relationshipStatus = GRAPH_STATUS.RESOLVED;
+        child.parentAuthorId = child.parentAuthorId || parentNode.authorId || null;
+        child.parentAuthorUsername = child.parentAuthorUsername || parentNode.username || null;
+        await persistGraphNode(child);
+      }
+      await client.sRem(pendingKey, childId);
+      if (child.branchKey) await reconcileGraphChildren(child.commentId, child, depth + 1);
+    }
+
+    if ((await client.sCard(pendingKey)) === 0) await client.del(pendingKey);
+  }
+
+  async function recordGraphNode(input) {
+    assertReady();
+    if (!input?.commentId || !input?.rootId) throw new Error("graph node requires commentId and rootId");
+
+    const parentNode = input.parentId ? await getGraphNode(input.parentId) : null;
+    const existing = await getGraphNode(input.commentId);
+    const node = deriveGraphNode({
+      ...existing,
+      ...input,
+      text: input.text != null ? input.text : existing?.text,
+      createdAt: existing?.createdAt || input.createdAt,
+      parentNode,
+      ownerUserId: input.ownerUserId || threadsUserId || selfUserId,
+      ownerUsername: input.ownerUsername || selfUsername,
+    });
+
+    await persistGraphNode(node);
+
+    if (node.relationshipStatus === GRAPH_STATUS.PENDING_RELATIONSHIP && node.parentId) {
+      const pendingKey = graphPendingKey(node.parentId);
+      await client.sAdd(pendingKey, node.commentId);
+      await client.expire(pendingKey, graphTtlSeconds);
+    } else if (node.parentId) {
+      await client.sRem(graphPendingKey(node.parentId), node.commentId);
+    }
+
+    if (node.branchKey) await reconcileGraphChildren(node.commentId, node);
+    return node;
+  }
+
   async function getConversationReplyCount(conversationKey) {
     assertReady();
     if (!conversationKey) return p.normalReplyLimit;
@@ -201,7 +275,39 @@ return 1
       ],
       arguments: [reservation.reservationId, String(now), String(publishedReplyId || ""), String(ttlSeconds)],
     });
-    return Number(result) === 1;
+    const committed = Number(result) === 1;
+
+    // Graph is a projection, not the source of publish truth. Never turn an
+    // already-committed publish into a failure because Graph projection failed.
+    if (committed && publishedReplyId) {
+      try {
+        const sourceNode = await getGraphNode(reservation.commentId);
+        if (sourceNode) {
+          await recordGraphNode({
+            commentId: String(publishedReplyId),
+            parentId: sourceNode.commentId,
+            rootId: sourceNode.rootId,
+            authorId: threadsUserId || selfUserId,
+            username: selfUsername,
+            text: null,
+            isOwner: true,
+            isBotGenerated: true,
+            parentAuthorId: sourceNode.authorId || null,
+            parentAuthorUsername: sourceNode.username || null,
+            ownerUserId: threadsUserId || selfUserId,
+            ownerUsername: selfUsername,
+          });
+        }
+      } catch (e) {
+        console.error("Conversation graph publish projection error", JSON.stringify({
+          sourceCommentId: String(reservation.commentId),
+          replyId: String(publishedReplyId),
+          error: e?.message || String(e),
+        }));
+      }
+    }
+
+    return committed;
   }
 
   const ROLLBACK_SCRIPT = `
@@ -257,6 +363,7 @@ return 1
   return {
     init, quit, health, isReady, isEnabled, isDryRun, isSelfAuthored,
     getUserKey, getConversationKey, getSourceStatus, isBotGeneratedId, markBotGeneratedId,
+    getGraphNode, recordGraphNode,
     getConversationReplyCount, reserve, commitSuccess, rollback, markAmbiguous, ambiguousCount,
     limits: {
       USER_COOLDOWN_MS: COOLDOWN_MS,
