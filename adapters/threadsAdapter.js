@@ -21,17 +21,23 @@ function createThreadsAdapter({ accessToken, userId }) {
     throw lastErr;
   }
 
+  function withWebhookTarget(value, targetId) {
+    if (!value || typeof value !== "object" || Array.isArray(value) || !targetId) return value;
+    return { ...value, __webhook_target_id: String(targetId) };
+  }
+
   function parseWebhook(body) {
     const events = [];
     const values = Array.isArray(body?.values) ? body.values : [];
+    const envelopeTargetId = body?.target_id || null;
     for (const item of values) {
       if (!["replies", "comments"].includes(item?.field)) continue;
-      if (item?.value) events.push(item.value);
+      if (item?.value) events.push(withWebhookTarget(item.value, item?.target_id || envelopeTargetId));
     }
     for (const entry of body?.entry || []) {
       for (const change of entry?.changes || []) {
         if (!["replies", "comments"].includes(change?.field)) continue;
-        if (change?.value) events.push(change.value);
+        if (change?.value) events.push(withWebhookTarget(change.value, change?.target_id || entry?.target_id || envelopeTargetId));
       }
     }
     return events;
@@ -44,6 +50,7 @@ function createThreadsAdapter({ accessToken, userId }) {
   function getParentId(c) { return c?.replied_to?.id || c?.parent?.id || c?.parent_id || null; }
   function getParentAuthorId(c) { return c?.replied_to?.user_id || c?.replied_to?.from?.id || c?.parent?.user_id || c?.parent?.from?.id || c?.parent_user_id || null; }
   function getParentAuthorUsername(c) { return c?.replied_to?.username || c?.replied_to?.from?.username || c?.parent?.username || c?.parent?.from?.username || c?.parent_username || null; }
+  function getWebhookTargetId(c) { return c?.__webhook_target_id || null; }
   function getRootPostId(c) {
     return c?.root_post?.id || c?.root_post_id || c?.media_id || c?.media?.root_post?.id || getParentId(c) || null;
   }
@@ -173,6 +180,7 @@ function createThreadsAdapter({ accessToken, userId }) {
     getParentId,
     getParentAuthorId,
     getParentAuthorUsername,
+    getWebhookTargetId,
     resolveParentAuthor,
     createReply,
     publishReply,
