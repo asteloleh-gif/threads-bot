@@ -26,6 +26,8 @@ function deriveGraphNode({
   ownerUserId = null,
   ownerUsername = null,
   createdAt = null,
+  publishStatus = null,
+  publishConfirmedAt = null,
 } = {}) {
   const id = s(commentId);
   const parent = s(parentId);
@@ -64,6 +66,8 @@ function deriveGraphNode({
     parentAuthorUsername: parentAuthorUsername || null,
     branchKey,
     relationshipStatus,
+    publishStatus: publishStatus || null,
+    publishConfirmedAt: publishConfirmedAt || null,
   };
 }
 
