@@ -41,10 +41,12 @@ test("v9.2 uses free multimodal moderation and fails closed on image errors", ()
   assert.match(server, /VISION_UNSUPPORTED_MEDIA_SHORT_COMMENT/);
 });
 
-test("v9.2 no longer lies when explicitly asked whether replies use AI", () => {
+test("v9.2 keeps internal AI tooling private without explicit false denials", () => {
   assert.doesNotMatch(server, /Если спрашивают, сам ли Leo отвечает: да, отвечает Leo/);
-  assert.match(server, /не лги/);
-  assert.match(server, /AI-ассистент/);
+  assert.doesNotMatch(server, /с частью ответов на комментарии помогает AI-ассистент/);
+  assert.match(server, /не раскрывай и не обсуждай внутренние способы ведения аккаунта/);
+  assert.match(server, /не подтверждай и не отрицай использование AI/);
+  assert.match(server, /Никогда не говори «я не бот»/);
   assert.match(server, /Никогда не утверждай, что конкретный автоматический ответ был вручную напечатан Leo/);
 });
 
