@@ -4,8 +4,15 @@ const { createThreadsTokenManager } = require("../auth/threadsTokenManager");
 const DEFAULT_FETCH_TIMEOUT_MS = 20000;
 
 function createThreadsAdapter({ accessToken, userId }) {
+  // Backward-compatible fallback for the existing Railway typo. Prefer THREADS_ACCESS_TOKEN,
+  // but accept THREDS_ACCESS_TOKEN so the current sealed value can be used without exposing it.
+  accessToken = accessToken || process.env.THREDS_ACCESS_TOKEN || "";
   const tokenManager = createThreadsTokenManager({ initialToken: accessToken, redisUrl: process.env.REDIS_URL });
-  tokenManager.init().catch(e => console.error("Threads token manager init failed", e?.message || String(e)));
+  // Only auto-connect when the real server is the process entrypoint. Tests import the adapter/server
+  // and must not leave an open Redis socket that blocks Railway pre-deploy completion.
+  if (require.main?.filename?.endsWith("server.js")) {
+    tokenManager.init().catch(e => console.error("Threads token manager init failed", e?.message || String(e)));
+  }
   const getAccessToken = () => tokenManager.getToken() || accessToken;
 
   async function fetchWithRetry(url, options, maxAttempts = 3) {
