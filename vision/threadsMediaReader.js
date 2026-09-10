@@ -1,11 +1,13 @@
 const fetch = require("node-fetch");
 
 const DEFAULT_TIMEOUT_MS = 12000;
+// Use fields documented for reply media objects. `user_id` is intentionally omitted:
+// it is not part of the Threads reply-media field set and caused Meta to return 500
+// for real reply IDs in production.
 const DETAILS_FIELDS = [
   "id",
   "text",
   "username",
-  "user_id",
   "media_type",
   "media_url",
   "thumbnail_url",
