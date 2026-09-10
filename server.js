@@ -219,7 +219,7 @@ async function handleComment(c) {
     }
     if (result.status === "ambiguous") { try { await safety.markAmbiguous(reservation); } catch (e) { console.error("Ambiguous state hold failed:", e?.message || String(e)); } return console.error("Reply outcome ambiguous - holding comment", JSON.stringify({ sourceCommentId: String(commentId), reason: "AMBIGUOUS_PUBLISH" })); }
     try { await safety.rollback(reservation); }
-    catch (e) { return console.error("Publish failed and rollback failed", JSON.stringify({ sourceCommentId: String(commentId), error: e?.message || String(e) }));
+    catch (e) { return console.error("Publish failed and rollback failed", JSON.stringify({ sourceCommentId: String(commentId), error: e?.message || String(e) })); }
     console.log("Reply skipped", JSON.stringify({ reason: "DEFINITIVE_PUBLISH_FAILURE", sourceCommentId: String(commentId) }));
   } catch (e) {
     try { await safety.rollback(reservation); } catch (_) {}
