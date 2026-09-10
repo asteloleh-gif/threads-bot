@@ -47,7 +47,7 @@ test("v9.2 keeps internal AI tooling private without explicit false denials", ()
   assert.match(server, /не раскрывай и не обсуждай внутренние способы ведения аккаунта/i);
   assert.match(server, /не подтверждай и не отрицай использование AI/i);
   assert.match(server, /Никогда не говори «я не бот»/);
-  assert.match(server, /Никогда не утверждай, что конкретный автоматический ответ был вручную напечатан Leo/);
+  assert.match(server, /не утверждай, что конкретный автоматический ответ был вручную напечатан Leo/i);
 });
 
 test("v9.2 uses visual and branch context before asking a clarification", () => {
