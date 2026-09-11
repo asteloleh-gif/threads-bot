@@ -7,6 +7,12 @@ const bodyParser = require("body-parser");
 const fetch = require("node-fetch");
 const { createThreadsAdapter } = require("./adapters/threadsAdapter");
 const { createThreadsDiscoveryAdapter } = require("./adapters/threadsDiscoveryAdapter");
+const { loadProactiveConfig, loadMonitors } = require("./config/proactive");
+const { createCandidateRepository } = require("./proactive/candidateRepository");
+const { createMonitorService } = require("./proactive/monitorService");
+const { createApprovalClient } = require("./proactive/approvalClient");
+const { createProactiveAiService } = require("./proactive/aiService");
+const { createCopilotRunner } = require("./proactive/copilotRunner");
 const { createSafetyPipeline } = require("./safety/pipeline");
 const { createHumanLockStore } = require("./safety/humanLockStore");
 const { isHumanLockMarker, contextualClosingRule } = require("./policy/replyBehavior");
@@ -39,6 +45,13 @@ const safety = createSafetyPipeline({ threadsUserId: THREADS_USER_ID, selfUserna
 const humanLocks = createHumanLockStore({ redisUrl: REDIS_URL, ttlSeconds: policy.conversationResetHours * 60 * 60 });
 const threads = createThreadsAdapter({ accessToken: THREADS_ACCESS_TOKEN, userId: THREADS_USER_ID });
 const threadsDiscovery = createThreadsDiscoveryAdapter({ tokenManager: threads.tokenManager });
+const proactiveConfig = loadProactiveConfig();
+const proactiveMonitors = loadMonitors(process.env, proactiveConfig);
+const proactiveState = createCandidateRepository({ redisUrl: REDIS_URL, namespace: proactiveConfig.namespace, ttlSeconds: proactiveConfig.candidateTtlHours * 3600 });
+const proactiveMonitor = createMonitorService({ config: proactiveConfig, discovery: threadsDiscovery, candidates: proactiveState });
+const proactiveApproval = createApprovalClient({ baseUrl: proactiveConfig.approvalBaseUrl, account: proactiveConfig.account, secret: proactiveConfig.approvalSecret });
+const proactiveAi = createProactiveAiService({ apiKey: OPENAI_API_KEY, model: proactiveConfig.openaiModel, state: proactiveState, config: proactiveConfig });
+const proactiveRunner = createCopilotRunner({ config: proactiveConfig, monitors: proactiveMonitors, monitorService: proactiveMonitor, state: proactiveState, ai: proactiveAi, approval: proactiveApproval, threads, selfUsername: THREADS_USERNAME });
 const vision = createVisionGuard({ apiKey: OPENAI_API_KEY, enabled: VISION_ENABLED, detail: VISION_DETAIL, timeoutMs: Number(OPENAI_TIMEOUT_MS) });
 const mediaReader = createThreadsMediaReader({ tokenManager: threads.tokenManager, fallbackToken: THREADS_ACCESS_TOKEN, timeoutMs: Number(VISION_METADATA_TIMEOUT_MS) });
 const SHORT_TEXT_THRESHOLD = Math.max(1, Number.parseInt(VISION_SHORT_TEXT_THRESHOLD, 10) || 24);
@@ -52,7 +65,8 @@ app.get("/health", async (_q, r) => {
   const ok = (!policy.redisRequired || redis.connected) && humanLock.connected;
   r.status(ok ? 200 : 503).json({ ok, version: "v9.2.0", enabled: safety.isEnabled(), dryRun: safety.isDryRun(), redis, humanLock, ambiguousPending, policy, limits: safety.limits,
     memory: { maxMessages: Number(MAX_MEMORY_MESSAGES), maxTokens: Number(MAX_MEMORY_TOKENS) },
-    vision: { enabled: vision.isEnabled(), detail: vision.detail, maxImages: 1, moderation: "omni-moderation-latest", failClosedOnImageError: true } });
+    vision: { enabled: vision.isEnabled(), detail: vision.detail, maxImages: 1, moderation: "omni-moderation-latest", failClosedOnImageError: true },
+    proactive: { enabled: proactiveConfig.enabled, mode: proactiveConfig.mode, account: proactiveConfig.account || null, monitors: proactiveMonitors.length, dailyDraftLimit: proactiveConfig.dailyDraftLimit, dailyAiTokenLimit: proactiveConfig.dailyAiTokenLimit } });
 });
 
 app.get("/webhook", (q, r) => {
@@ -293,6 +307,8 @@ async function start() {
       postCount: Array.isArray(result.posts) ? result.posts.length : 0,
     }));
   }
+  const proactiveStart = await proactiveRunner.start();
+  console.log("Proactive copilot startup", JSON.stringify(proactiveStart));
 }
 if (require.main === module) start().catch(e => { console.error("Fatal startup error:", e?.message || String(e)); process.exit(1); });
-module.exports = { app, handleComment, safety, humanLocks, threads, threadsDiscovery, policy, vision, mediaReader, getContext, generateReply, start, resolveParentForRouting };
+module.exports = { app, handleComment, safety, humanLocks, threads, threadsDiscovery, proactiveRunner, policy, vision, mediaReader, getContext, generateReply, start, resolveParentForRouting };
