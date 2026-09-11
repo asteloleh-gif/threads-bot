@@ -6,6 +6,7 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const fetch = require("node-fetch");
 const { createThreadsAdapter } = require("./adapters/threadsAdapter");
+const { createThreadsDiscoveryAdapter } = require("./adapters/threadsDiscoveryAdapter");
 const { createSafetyPipeline } = require("./safety/pipeline");
 const { createHumanLockStore } = require("./safety/humanLockStore");
 const { isHumanLockMarker, contextualClosingRule } = require("./policy/replyBehavior");
@@ -29,6 +30,7 @@ const {
   MAX_MEMORY_MESSAGES = "8", MAX_MEMORY_TOKENS = "1000",
   VISION_ENABLED = "false", VISION_DETAIL = "low", VISION_SHORT_TEXT_THRESHOLD = "24",
   VISION_METADATA_TIMEOUT_MS = "12000", OPENAI_TIMEOUT_MS = "20000",
+  PROACTIVE_PERMISSION_PROBE = "false",
 } = process.env;
 
 const policy = loadPolicy();
@@ -36,6 +38,7 @@ const AIRTABLE_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}`;
 const safety = createSafetyPipeline({ threadsUserId: THREADS_USER_ID, selfUsername: THREADS_USERNAME, botEnabled: BOT_ENABLED, botDryRun: BOT_DRY_RUN, redisUrl: REDIS_URL, policy });
 const humanLocks = createHumanLockStore({ redisUrl: REDIS_URL, ttlSeconds: policy.conversationResetHours * 60 * 60 });
 const threads = createThreadsAdapter({ accessToken: THREADS_ACCESS_TOKEN, userId: THREADS_USER_ID });
+const threadsDiscovery = createThreadsDiscoveryAdapter({ tokenManager: threads.tokenManager });
 const vision = createVisionGuard({ apiKey: OPENAI_API_KEY, enabled: VISION_ENABLED, detail: VISION_DETAIL, timeoutMs: Number(OPENAI_TIMEOUT_MS) });
 const mediaReader = createThreadsMediaReader({ tokenManager: threads.tokenManager, fallbackToken: THREADS_ACCESS_TOKEN, timeoutMs: Number(VISION_METADATA_TIMEOUT_MS) });
 const SHORT_TEXT_THRESHOLD = Math.max(1, Number.parseInt(VISION_SHORT_TEXT_THRESHOLD, 10) || 24);
@@ -280,6 +283,16 @@ async function start() {
   await safety.init();
   await humanLocks.init();
   app.listen(PORT, () => console.log(`Bot listening on port ${PORT}; model=${OPENAI_MODEL}; safety=v9.2.0; enabled=${safety.isEnabled()}; dryRun=${safety.isDryRun()}; limits=${policy.cooldownSeconds}s/${policy.normalReplyLimit}perConversation/${policy.globalDailyLimit}daily; redis=${safety.isReady()}; humanLock=${humanLocks.isReady()}; vision=${vision.isEnabled()}; visionDetail=${vision.detail}`));
+  if (PROACTIVE_PERMISSION_PROBE === "true") {
+    const result = await threadsDiscovery.searchPosts({ query: "business", searchType: "RECENT", limit: 1 });
+    console.log("Threads keyword permission probe", JSON.stringify({
+      status: result.status,
+      reason: result.reason || null,
+      httpStatus: result.httpStatus || null,
+      apiErrorCode: result.apiErrorCode || null,
+      postCount: Array.isArray(result.posts) ? result.posts.length : 0,
+    }));
+  }
 }
 if (require.main === module) start().catch(e => { console.error("Fatal startup error:", e?.message || String(e)); process.exit(1); });
-module.exports = { app, handleComment, safety, humanLocks, threads, policy, vision, mediaReader, getContext, generateReply, start, resolveParentForRouting };
+module.exports = { app, handleComment, safety, humanLocks, threads, threadsDiscovery, policy, vision, mediaReader, getContext, generateReply, start, resolveParentForRouting };
