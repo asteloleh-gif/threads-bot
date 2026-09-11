@@ -65,3 +65,18 @@ env vars in the platform's dashboard.
   Threads API rate limits.
 - Consider filtering by keyword (spam/abuse) before calling GPT at all, to
   save on tokens.
+
+## Proactive Copilot milestone 1
+
+The repository includes an isolated, read-only discovery layer for finding public
+Threads posts by keyword. It is intentionally not wired into `server.js`, does not
+call GPT, and cannot publish replies. `PROACTIVE_ENABLED` defaults to `false`.
+
+The first language profiles are Russian and English in Copilot mode. Simplified
+Chinese is represented as a disabled profile so another language can be enabled
+through configuration without changing the discovery or deduplication code.
+
+Before enabling this layer, the Threads app must have the official
+`threads_keyword_search` permission and Redis must be available. Candidate IDs are
+deduplicated globally in a separate `astel:proactive:v1` namespace; post text and
+access tokens are not persisted by that store.

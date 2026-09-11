@@ -1,23 +1,37 @@
 const fetch = require("node-fetch");
 const { createClient } = require("redis");
+const { createHash } = require("node:crypto");
 
 const DEFAULT_CHECK_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_REFRESH_AFTER_DAYS = 50;
 const TOKEN_KEY = "astel:v91:auth:threads:token";
 const REFRESHED_AT_KEY = "astel:v91:auth:threads:refreshed-at";
+const CONFIG_TOKEN_HASH_KEY = "astel:v91:auth:threads:config-token-hash";
 
-function createThreadsTokenManager({ initialToken, redisUrl, checkIntervalMs = DEFAULT_CHECK_MS, refreshAfterDays = DEFAULT_REFRESH_AFTER_DAYS } = {}) {
+function createThreadsTokenManager({ initialToken, redisUrl, checkIntervalMs = DEFAULT_CHECK_MS, refreshAfterDays = DEFAULT_REFRESH_AFTER_DAYS, clientFactory = createClient } = {}) {
   let currentToken = initialToken || "";
   let client = null, timer = null, running = false;
   function getToken() { return currentToken; }
 
   async function init() {
     if (!redisUrl) { console.warn("Threads token manager disabled: REDIS_URL missing"); return; }
-    client = createClient({ url: redisUrl });
+    client = clientFactory({ url: redisUrl });
     client.on("error", e => console.error("Threads token manager Redis error", e?.message || String(e)));
     await client.connect();
     const stored = await client.get(TOKEN_KEY);
-    if (stored) currentToken = stored; else if (currentToken) await client.set(TOKEN_KEY, currentToken);
+    const fingerprint = initialToken ? createHash("sha256").update(initialToken).digest("hex") : null;
+    const previousFingerprint = await client.get(CONFIG_TOKEN_HASH_KEY);
+    if (fingerprint && fingerprint !== previousFingerprint) {
+      // An explicit configuration replacement wins once. Subsequent restarts retain
+      // the refreshed Redis token while the configured token remains unchanged.
+      await client.multi()
+        .set(TOKEN_KEY, initialToken)
+        .set(CONFIG_TOKEN_HASH_KEY, fingerprint)
+        .set(REFRESHED_AT_KEY, String(Date.now()))
+        .exec();
+      currentToken = initialToken;
+    } else if (stored) currentToken = stored;
+    else if (currentToken) await client.set(TOKEN_KEY, currentToken);
     if (!(await client.get(REFRESHED_AT_KEY))) await client.set(REFRESHED_AT_KEY, String(Date.now()));
     console.log("Threads token manager connected", JSON.stringify({ refreshAfterDays, checkHours: Math.round(checkIntervalMs / 3600000) }));
     timer = setInterval(() => { maybeRefresh().catch(e => console.error("Threads token refresh check failed", e?.message || String(e))); }, checkIntervalMs);
@@ -59,4 +73,4 @@ function createThreadsTokenManager({ initialToken, redisUrl, checkIntervalMs = D
   return { init, getToken, maybeRefresh, close };
 }
 
-module.exports = { createThreadsTokenManager, TOKEN_KEY, REFRESHED_AT_KEY };
+module.exports = { createThreadsTokenManager, TOKEN_KEY, REFRESHED_AT_KEY, CONFIG_TOKEN_HASH_KEY };
