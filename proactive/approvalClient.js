@@ -35,7 +35,7 @@ function createApprovalClient({ baseUrl, account, secret, fetchImpl = fetch, tim
   }
   async function report(summary) {
     const result = await request("/api/copilot/reports", { method: "POST", body: JSON.stringify(summary) });
-    return result.status === "ok" ? { status: "ok", ...result.data } : result;
+    return result.status === "ok" ? { ...result.data, status: "ok" } : result;
   }
   return { configured, submit, get, report };
 }
