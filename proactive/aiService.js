@@ -39,6 +39,7 @@ function createProactiveAiService({ apiKey, model = "gpt-5.6-luna", state, confi
   }
 
   async function rank(candidates) {
+    const minimumScore = config?.allowSelfTest ? 0 : 75;
     const selected = candidates.slice(0, 25);
     const items = selected.map(item => ({ id: item.sourcePostId, text: item.text.slice(0, 700), hasImage: item.media?.kind === "image", altText: item.media?.altText || null }));
     const userContent = [{ type: "text", text: JSON.stringify({ items }) }];
@@ -55,7 +56,7 @@ function createProactiveAiService({ apiKey, model = "gpt-5.6-luna", state, confi
     const byId = new Map(candidates.map(item => [String(item.sourcePostId), item]));
     const ranked = (Array.isArray(result.value?.items) ? result.value.items : [])
       .map(item => ({ candidate: byId.get(String(item.id)), score: Number(item.score), language: String(item.language || "") }))
-      .filter(item => item.candidate && Number.isFinite(item.score) && item.score >= 75 && item.language)
+      .filter(item => item.candidate && Number.isFinite(item.score) && item.score >= minimumScore && item.language)
       .sort((a, b) => b.score - a.score);
     return { status: "ok", ranked, usage: result.usage };
   }
