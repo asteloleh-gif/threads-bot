@@ -83,6 +83,12 @@ test("basic filters reject self, empty and link-only candidates", () => {
   assert.equal(basicFilter({ sourcePostId: "1", text: "Good idea", authorUsername: "maker" }, "leo"), true);
   assert.equal(inspectCandidate({ sourcePostId: "1", text: "" }, "leo").reason, "EMPTY_TEXT");
   assert.equal(basicFilter({ sourcePostId: "1", text: "", authorUsername: "maker", media: { kind: "image" } }, "leo"), true);
+  assert.equal(inspectCandidate({ sourcePostId: "1", text: "A useful test post", authorUsername: "Leo" }, "leo", { allowSelf: true }).ok, true);
+});
+
+test("self-test switch is disabled by default", () => {
+  assert.equal(loadProactiveConfig({ PROACTIVE_ENABLED: "true", PROACTIVE_MODE: "COPILOT", PROACTIVE_ACCOUNT: "en" }).allowSelfTest, false);
+  assert.equal(loadProactiveConfig({ PROACTIVE_ENABLED: "true", PROACTIVE_MODE: "COPILOT", PROACTIVE_ACCOUNT: "en", PROACTIVE_ALLOW_SELF_TEST: "true" }).allowSelfTest, true);
 });
 
 test("runner hydrates an image-only candidate before GPT and Telegram submission", async () => {
