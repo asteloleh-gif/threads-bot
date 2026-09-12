@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const { loadProactiveConfig, defaultMonitors } = require("../config/proactive");
 const { createApprovalClient } = require("../proactive/approvalClient");
 const { createProactiveAiService } = require("../proactive/aiService");
-const { createCopilotRunner, basicFilter, scheduleSlot } = require("../proactive/copilotRunner");
+const { createCopilotRunner, basicFilter, inspectCandidate, scheduleSlot } = require("../proactive/copilotRunner");
 
 function response(status, body, headers = {}) {
   return { status, ok: status >= 200 && status < 300, headers: { get: name => headers[name] || null }, async json() { return body; } };
@@ -81,6 +81,29 @@ test("basic filters reject self, empty and link-only candidates", () => {
   assert.equal(basicFilter({ sourcePostId: "1", text: "A sufficiently useful public post", authorUsername: "Leo" }, "leo"), false);
   assert.equal(basicFilter({ sourcePostId: "1", text: "A sufficiently useful public post", authorUsername: "maker" }, "leo"), true);
   assert.equal(basicFilter({ sourcePostId: "1", text: "Good idea", authorUsername: "maker" }, "leo"), true);
+  assert.equal(inspectCandidate({ sourcePostId: "1", text: "" }, "leo").reason, "EMPTY_TEXT");
+  assert.equal(basicFilter({ sourcePostId: "1", text: "", authorUsername: "maker", media: { kind: "image" } }, "leo"), true);
+});
+
+test("runner hydrates an image-only candidate before GPT and Telegram submission", async () => {
+  const logs = [];
+  let rankedCandidate = null;
+  const runner = createCopilotRunner({
+    config: { enabled: true, mode: "COPILOT", maxPostAgeMinutes: 60, dailyEvaluationLimit: 10, dailyDraftLimit: 10 },
+    monitors: [{ id: "m", enabled: true }], selfUsername: "leo",
+    monitorService: { async runOnce() { return { status: "ok", discovered: 1, accepted: 1, candidates: [{ sourcePostId: "1", text: "", mediaType: "IMAGE", authorUsername: "maker" }] }; } },
+    mediaReader: { async getPostDetails() { return { ok: true, data: { id: "1", text: "", media_type: "IMAGE", media_url: "https://example.com/image.jpg", alt_text: "A small business dashboard" } }; } },
+    vision: { isEnabled() { return true; }, inspectTrustedThreadsMedia(data) { return { kind: "image", mediaType: data.media_type, imageUrl: data.media_url, altText: data.alt_text }; }, async moderateImage() { return { ok: true, flagged: false }; } },
+    state: { async takeQuota(_kind, requested) { return { granted: requested }; }, async savePending() { return true; } },
+    ai: { async rank(candidates) { rankedCandidate = candidates[0]; return { status: "ok", ranked: [{ candidate: candidates[0], language: "en" }], usage: null }; }, async draft() { return { status: "ok", text: "What changed after you built this dashboard?", language: "en", usage: null }; } },
+    approval: { configured() { return true; }, async submit() { return { status: "ok", id: "c".repeat(32) }; } },
+    threads: {}, logger: { log(...args) { logs.push(args.join(" ")); }, warn() {}, error() {} },
+  });
+  const result = await runner.runSearch();
+  assert.equal(result.eligible, 1);
+  assert.equal(result.submitted, 1);
+  assert.equal(rankedCandidate.media.kind, "image");
+  assert.match(logs.join("\n"), /Proactive candidate hydrated/);
 });
 
 test("runner publishes only after explicit approval and exactly once", async () => {
