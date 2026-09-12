@@ -6,11 +6,25 @@ function basicFilter(candidate, selfUsername) {
   return true;
 }
 
-function createCopilotRunner({ config, monitors, monitorService, state, ai, approval, threads, selfUsername, logger = console } = {}) {
+function scheduleSlot(timestamp, timezone, hours) {
+  if (!Array.isArray(hours) || !hours.length) return null;
+  try {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).formatToParts(new Date(timestamp)).filter(part => part.type !== "literal").map(part => [part.type, part.value]));
+    const hour = Number(parts.hour);
+    const minute = Number(parts.minute);
+    if (!hours.includes(hour) || minute > 4) return null;
+    return `${parts.year}-${parts.month}-${parts.day}:${parts.hour}`;
+  } catch (_) { return null; }
+}
+
+function createCopilotRunner({ config, monitors, monitorService, state, ai, approval, threads, selfUsername, logger = console, clock = Date.now } = {}) {
   let searchTimer = null;
   let approvalTimer = null;
   let searchRunning = false;
   let approvalRunning = false;
+  let lastScheduleSlot = null;
   const usageTokens = usage => Math.max(0, Number(usage?.total_tokens || 0) || (Number(usage?.prompt_tokens || 0) + Number(usage?.completion_tokens || 0)));
   const usageCostMicrousd = usage => Math.max(0, Math.ceil(Number(usage?.prompt_tokens || 0) * 0.2 + Number(usage?.completion_tokens || 0) * 1.2));
 
@@ -124,12 +138,27 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
     const init = await state.init();
     if (!init.ready) return { status: "failed", reason: init.reason };
     await processPending();
-    const first = await runSearch();
-    await sendSearchReport(first);
-    searchTimer = setInterval(() => runSearch().then(async result => {
+    let first;
+    const executeSearch = () => runSearch().then(async result => {
       logger.log("Proactive search cycle", JSON.stringify(result));
       await sendSearchReport(result);
-    }).catch(error => logger.error("Proactive search error", error?.message || String(error))), config.pollIntervalSeconds * 1000);
+      return result;
+    }).catch(error => logger.error("Proactive search error", error?.message || String(error)));
+    if (config.scheduleHours?.length) {
+      const scheduledSearch = async () => {
+        const slot = scheduleSlot(clock(), config.scheduleTimezone, config.scheduleHours);
+        if (!slot || slot === lastScheduleSlot) return;
+        lastScheduleSlot = slot;
+        await executeSearch();
+      };
+      await scheduledSearch();
+      first = { status: "scheduled", hours: config.scheduleHours, timezone: config.scheduleTimezone };
+      searchTimer = setInterval(scheduledSearch, 60000);
+    } else {
+      first = await runSearch();
+      await sendSearchReport(first);
+      searchTimer = setInterval(executeSearch, config.pollIntervalSeconds * 1000);
+    }
     approvalTimer = setInterval(() => processPending().then(result => {
       if (result.published || result.skipped || result.failed) logger.log("Proactive approval cycle", JSON.stringify(result));
     }).catch(error => logger.error("Proactive approval error", error?.message || String(error))), config.approvalPollSeconds * 1000);
@@ -147,4 +176,4 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
   return { start, close, runSearch, processPending };
 }
 
-module.exports = { createCopilotRunner, basicFilter };
+module.exports = { createCopilotRunner, basicFilter, scheduleSlot };
