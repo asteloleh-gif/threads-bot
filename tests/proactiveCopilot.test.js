@@ -121,6 +121,20 @@ test("runner hydrates an image-only candidate before GPT and Telegram submission
   assert.match(logs.join("\n"), /Proactive candidate hydrated/);
 });
 
+test("controlled self-test submits a safe fallback when ranking returns no winner", async () => {
+  const runner = createCopilotRunner({
+    config: { enabled: true, mode: "COPILOT", allowSelfTest: true, account: "en", maxPostAgeMinutes: 60, dailyEvaluationLimit: 10, dailyDraftLimit: 10 },
+    monitors: [{ id: "m", enabled: true }], selfUsername: "leo",
+    monitorService: { async runOnce() { return { status: "ok", discovered: 1, accepted: 1, candidates: [{ sourcePostId: "1", text: "A controlled self-authored workflow test post", authorUsername: "leo", expectedLanguage: "en" }] }; } },
+    state: { async takeQuota(_kind, requested) { return { granted: requested }; }, async savePending() { return true; } },
+    ai: { async rank() { return { status: "ok", ranked: [], usage: null }; }, async draft(candidate, language) { assert.equal(candidate.sourcePostId, "1"); assert.equal(language, "en"); return { status: "ok", text: "Controlled draft", language, usage: null }; } },
+    approval: { configured() { return true; }, async submit() { return { status: "ok", id: "d".repeat(32) }; } },
+    threads: {},
+  });
+  const result = await runner.runSearch();
+  assert.equal(result.submitted, 1);
+});
+
 test("runner publishes only after explicit approval and exactly once", async () => {
   const pending = [{ draftId: "a".repeat(32), postId: "123", text: "draft", language: "en" }];
   let claimed = false;
