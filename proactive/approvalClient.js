@@ -33,7 +33,11 @@ function createApprovalClient({ baseUrl, account, secret, fetchImpl = fetch, tim
     const result = await request(`/api/copilot/drafts/${encodeURIComponent(draftId)}`, { method: "GET" });
     return result.status === "ok" ? { status: "ok", ...result.data } : result;
   }
-  return { configured, submit, get };
+  async function report(summary) {
+    const result = await request("/api/copilot/reports", { method: "POST", body: JSON.stringify(summary) });
+    return result.status === "ok" ? { status: "ok", ...result.data } : result;
+  }
+  return { configured, submit, get, report };
 }
 
 module.exports = { createApprovalClient };
