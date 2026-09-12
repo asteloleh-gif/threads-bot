@@ -36,6 +36,7 @@ function loadProactiveConfig(env = process.env) {
     enabled,
     mode: enabled ? requestedMode : "OFF",
     account,
+    allowSelfTest: readBool(env, "PROACTIVE_ALLOW_SELF_TEST", false),
     pollIntervalSeconds: readInt(env, "PROACTIVE_POLL_INTERVAL_SECONDS", 14400, 300, 86400),
     scheduleHours: readScheduleHours(env, "PROACTIVE_SCHEDULE_HOURS"),
     scheduleTimezone: String(env.PROACTIVE_TIMEZONE || "UTC").trim() || "UTC",
