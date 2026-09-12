@@ -161,9 +161,12 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
       const rankTokens = usageTokens(ranked.usage);
       const rankCost = usageCostMicrousd(ranked.usage);
       if (ranked.status !== "ok") return { ...ranked, ...base, evaluated: candidates.length, submitted: 0, aiTokens: rankTokens, aiCostMicrousd: rankCost };
+      const best = ranked.ranked[0] || (config.allowSelfTest ? {
+        candidate: candidates[0],
+        language: candidates[0]?.expectedLanguage || config.account || "en",
+      } : null);
       const draftQuota = await state.takeQuota("drafts", 1, config.dailyDraftLimit);
-      if (!draftQuota.granted || !ranked.ranked.length) return { status: "ok", ...base, evaluated: candidates.length, submitted: 0, aiTokens: rankTokens, aiCostMicrousd: rankCost };
-      const best = ranked.ranked[0];
+      if (!draftQuota.granted || !best?.candidate) return { status: "ok", ...base, evaluated: candidates.length, submitted: 0, aiTokens: rankTokens, aiCostMicrousd: rankCost };
       const generated = await ai.draft(best.candidate, best.language);
       const aiTokens = rankTokens + usageTokens(generated.usage);
       const aiCostMicrousd = rankCost + usageCostMicrousd(generated.usage);
