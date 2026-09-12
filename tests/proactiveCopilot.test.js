@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const { loadProactiveConfig, defaultMonitors } = require("../config/proactive");
 const { createApprovalClient } = require("../proactive/approvalClient");
 const { createProactiveAiService } = require("../proactive/aiService");
-const { createCopilotRunner, basicFilter } = require("../proactive/copilotRunner");
+const { createCopilotRunner, basicFilter, scheduleSlot } = require("../proactive/copilotRunner");
 
 function response(status, body, headers = {}) {
   return { status, ok: status >= 200 && status < 300, headers: { get: name => headers[name] || null }, async json() { return body; } };
@@ -18,6 +18,14 @@ test("proactive limits default to six-ish daily cycles and one-account half budg
   assert.equal(config.monthlyAiCostMicrousdLimit, 1000000);
   assert.equal(defaultMonitors("ru").length, 8);
   assert.equal(defaultMonitors("en").length, 8);
+});
+
+test("Texas schedule exposes only the four human approval windows", () => {
+  const config = loadProactiveConfig({ PROACTIVE_ENABLED: "true", PROACTIVE_MODE: "COPILOT", PROACTIVE_ACCOUNT: "ru", PROACTIVE_SCHEDULE_HOURS: "8,12,16,20", PROACTIVE_TIMEZONE: "America/Chicago" });
+  assert.deepEqual(config.scheduleHours, [8, 12, 16, 20]);
+  assert.equal(config.scheduleTimezone, "America/Chicago");
+  assert.equal(scheduleSlot(Date.parse("2026-09-12T13:02:00Z"), config.scheduleTimezone, config.scheduleHours), "2026-09-12:08");
+  assert.equal(scheduleSlot(Date.parse("2026-09-12T14:00:00Z"), config.scheduleTimezone, config.scheduleHours), null);
 });
 
 test("approval client fails closed without credentials and never puts secret in URL or body", async () => {
