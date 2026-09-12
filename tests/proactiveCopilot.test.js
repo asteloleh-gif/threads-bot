@@ -27,8 +27,10 @@ test("approval client fails closed without credentials and never puts secret in 
   const client = createApprovalClient({ baseUrl: "https://telegram.test", account: "ru", secret,
     fetchImpl: async (url, options) => { calls.push({ url, options }); return response(201, { id: "a".repeat(32) }); } });
   assert.equal((await client.submit({ postId: "1", text: "draft" })).status, "ok");
+  assert.equal((await client.report({ scanned: 3 })).status, "ok");
   assert.equal(calls[0].options.headers.authorization, `Bearer ${secret}`);
   assert.doesNotMatch(calls[0].url + calls[0].options.body, new RegExp(secret));
+  assert.equal(calls[1].url, "https://telegram.test/api/copilot/reports");
 });
 
 test("AI service reserves hard token and monthly cost budgets before calls", async () => {
@@ -51,6 +53,7 @@ test("basic filters reject self, empty and link-only candidates", () => {
   assert.equal(basicFilter({ sourcePostId: "1", text: "https://example.com" }, "leo"), false);
   assert.equal(basicFilter({ sourcePostId: "1", text: "A sufficiently useful public post", authorUsername: "Leo" }, "leo"), false);
   assert.equal(basicFilter({ sourcePostId: "1", text: "A sufficiently useful public post", authorUsername: "maker" }, "leo"), true);
+  assert.equal(basicFilter({ sourcePostId: "1", text: "Good idea", authorUsername: "maker" }, "leo"), true);
 });
 
 test("runner publishes only after explicit approval and exactly once", async () => {
