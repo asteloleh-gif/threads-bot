@@ -1,9 +1,19 @@
-function basicFilter(candidate, selfUsername) {
+function inspectCandidate(candidate, selfUsername, { allowImage = false } = {}) {
   const text = String(candidate?.text || "").trim();
-  if (!candidate?.sourcePostId || text.length < 8 || text.length > 1500) return false;
-  if (selfUsername && String(candidate.authorUsername || "").toLowerCase() === String(selfUsername).toLowerCase()) return false;
-  if (/^(https?:\/\/\S+|[#@]\S+)$/i.test(text)) return false;
-  return true;
+  if (!candidate?.sourcePostId) return { ok: false, reason: "MISSING_POST_ID", textLength: text.length };
+  if (text.length > 1500) return { ok: false, reason: "TEXT_TOO_LONG", textLength: text.length };
+  if (selfUsername && String(candidate.authorUsername || "").toLowerCase() === String(selfUsername).toLowerCase()) {
+    return { ok: false, reason: "SELF_AUTHORED", textLength: text.length };
+  }
+  if (/^(https?:\/\/\S+|[#@]\S+)$/i.test(text)) return { ok: false, reason: "LINK_OR_TAG_ONLY", textLength: text.length };
+  if (text.length < 8 && !(allowImage && candidate?.media?.kind === "image")) {
+    return { ok: false, reason: text.length ? "TEXT_TOO_SHORT" : "EMPTY_TEXT", textLength: text.length };
+  }
+  return { ok: true, reason: "OK", textLength: text.length };
+}
+
+function basicFilter(candidate, selfUsername) {
+  return inspectCandidate(candidate, selfUsername, { allowImage: true }).ok;
 }
 
 function scheduleSlot(timestamp, timezone, hours) {
@@ -19,7 +29,7 @@ function scheduleSlot(timestamp, timezone, hours) {
   } catch (_) { return null; }
 }
 
-function createCopilotRunner({ config, monitors, monitorService, state, ai, approval, threads, selfUsername, logger = console, clock = Date.now } = {}) {
+function createCopilotRunner({ config, monitors, monitorService, state, ai, approval, threads, mediaReader, vision, selfUsername, logger = console, clock = Date.now } = {}) {
   let searchTimer = null;
   let approvalTimer = null;
   let searchRunning = false;
@@ -27,6 +37,47 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
   let lastScheduleSlot = null;
   const usageTokens = usage => Math.max(0, Number(usage?.total_tokens || 0) || (Number(usage?.prompt_tokens || 0) + Number(usage?.completion_tokens || 0)));
   const usageCostMicrousd = usage => Math.max(0, Math.ceil(Number(usage?.prompt_tokens || 0) * 0.2 + Number(usage?.completion_tokens || 0) * 1.2));
+
+  async function prepareCandidate(candidate) {
+    let verdict = inspectCandidate(candidate, selfUsername);
+    if (verdict.ok) return candidate;
+
+    const canHydrate = ["EMPTY_TEXT", "TEXT_TOO_SHORT"].includes(verdict.reason)
+      && candidate?.mediaType
+      && mediaReader?.getPostDetails
+      && vision?.isEnabled?.();
+    if (!canHydrate) {
+      logger.log("Proactive candidate rejected", JSON.stringify({ sourcePostId: String(candidate?.sourcePostId || ""), reason: verdict.reason, textLength: verdict.textLength, mediaType: candidate?.mediaType || null }));
+      return null;
+    }
+
+    const details = await mediaReader.getPostDetails(candidate.sourcePostId);
+    if (!details.ok) {
+      logger.log("Proactive candidate rejected", JSON.stringify({ sourcePostId: String(candidate.sourcePostId), reason: "MEDIA_DETAILS_UNAVAILABLE", detailReason: details.reason, status: details.status || null, textLength: verdict.textLength, mediaType: candidate.mediaType || null }));
+      return null;
+    }
+    const text = String(details.data?.text || candidate.text || "").trim();
+    const media = vision.inspectTrustedThreadsMedia(details.data);
+    if (media.kind !== "image") {
+      verdict = inspectCandidate({ ...candidate, text }, selfUsername);
+      if (verdict.ok) return { ...candidate, text };
+      logger.log("Proactive candidate rejected", JSON.stringify({ sourcePostId: String(candidate.sourcePostId), reason: media.kind === "unsupported" ? "UNSUPPORTED_MEDIA" : verdict.reason, textLength: text.length, mediaType: media.mediaType || candidate.mediaType || null }));
+      return null;
+    }
+    const moderation = await vision.moderateImage(media);
+    if (!moderation.ok || moderation.flagged) {
+      logger.log("Proactive candidate rejected", JSON.stringify({ sourcePostId: String(candidate.sourcePostId), reason: moderation.flagged ? "MEDIA_MODERATION_BLOCKED" : "MEDIA_MODERATION_UNAVAILABLE", detailReason: moderation.reason || null, textLength: text.length, mediaType: media.mediaType }));
+      return null;
+    }
+    const hydrated = { ...candidate, text, media };
+    verdict = inspectCandidate(hydrated, selfUsername, { allowImage: true });
+    if (!verdict.ok) {
+      logger.log("Proactive candidate rejected", JSON.stringify({ sourcePostId: String(candidate.sourcePostId), reason: verdict.reason, textLength: verdict.textLength, mediaType: media.mediaType }));
+      return null;
+    }
+    logger.log("Proactive candidate hydrated", JSON.stringify({ sourcePostId: String(candidate.sourcePostId), textLength: text.length, mediaType: media.mediaType, hasAltText: !!media.altText }));
+    return hydrated;
+  }
 
   async function sendSearchReport(result) {
     if (typeof approval.report !== "function") return;
@@ -97,7 +148,11 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
         }
         else if (result.reason !== "MONITOR_DISABLED") logger.warn("Proactive monitor skipped", JSON.stringify({ monitorId: monitor.id, reason: result.reason || result.status }));
       }
-      const filtered = found.filter(item => basicFilter(item, selfUsername));
+      const filtered = [];
+      for (const item of found) {
+        const prepared = await prepareCandidate(item);
+        if (prepared) filtered.push(prepared);
+      }
       const base = { ...stats, discovered: stats.scanned, eligible: filtered.length, aiTokens: 0, aiCostMicrousd: 0 };
       const quota = await state.takeQuota("evaluations", Math.min(filtered.length, 25), config.dailyEvaluationLimit);
       const candidates = filtered.slice(0, quota.granted);
@@ -176,4 +231,4 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
   return { start, close, runSearch, processPending };
 }
 
-module.exports = { createCopilotRunner, basicFilter, scheduleSlot };
+module.exports = { createCopilotRunner, basicFilter, inspectCandidate, scheduleSlot };
