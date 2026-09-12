@@ -1,6 +1,6 @@
 function basicFilter(candidate, selfUsername) {
   const text = String(candidate?.text || "").trim();
-  if (!candidate?.sourcePostId || text.length < 20 || text.length > 1500) return false;
+  if (!candidate?.sourcePostId || text.length < 8 || text.length > 1500) return false;
   if (selfUsername && String(candidate.authorUsername || "").toLowerCase() === String(selfUsername).toLowerCase()) return false;
   if (/^(https?:\/\/\S+|[#@]\S+)$/i.test(text)) return false;
   return true;
@@ -11,6 +11,23 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
   let approvalTimer = null;
   let searchRunning = false;
   let approvalRunning = false;
+  const usageTokens = usage => Math.max(0, Number(usage?.total_tokens || 0) || (Number(usage?.prompt_tokens || 0) + Number(usage?.completion_tokens || 0)));
+
+  async function sendSearchReport(result) {
+    if (typeof approval.report !== "function") return;
+    const payload = {
+      status: String(result?.status || "failed"),
+      reason: String(result?.reason || ""),
+      scanned: Number(result?.scanned || 0),
+      fresh: Number(result?.fresh || 0),
+      eligible: Number(result?.eligible || 0),
+      evaluated: Number(result?.evaluated || 0),
+      submitted: Number(result?.submitted || 0),
+      aiTokens: Number(result?.aiTokens || 0),
+    };
+    const sent = await approval.report(payload);
+    if (sent.status !== "ok") logger.warn("Proactive report skipped", JSON.stringify({ reason: sent.reason || sent.status }));
+  }
 
   async function processPending() {
     if (approvalRunning) return { status: "skipped", reason: "ALREADY_RUNNING" };
@@ -54,22 +71,30 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
     searchRunning = true;
     try {
       const found = [];
+      const stats = { scanned: 0, fresh: 0 };
       for (const monitor of monitors) {
         const result = await monitorService.runOnce(monitor, { maxPostAgeMinutes: config.maxPostAgeMinutes });
-        if (result.status === "ok") found.push(...result.candidates);
+        if (result.status === "ok") {
+          stats.scanned += Number(result.discovered || 0);
+          stats.fresh += Number(result.accepted || 0);
+          found.push(...result.candidates);
+        }
         else if (result.reason !== "MONITOR_DISABLED") logger.warn("Proactive monitor skipped", JSON.stringify({ monitorId: monitor.id, reason: result.reason || result.status }));
       }
       const filtered = found.filter(item => basicFilter(item, selfUsername));
+      const base = { ...stats, discovered: stats.scanned, eligible: filtered.length, aiTokens: 0 };
       const quota = await state.takeQuota("evaluations", Math.min(filtered.length, 25), config.dailyEvaluationLimit);
       const candidates = filtered.slice(0, quota.granted);
-      if (!candidates.length) return { status: "ok", discovered: found.length, evaluated: 0, submitted: 0 };
+      if (!candidates.length) return { status: "ok", ...base, evaluated: 0, submitted: 0 };
       const ranked = await ai.rank(candidates);
-      if (ranked.status !== "ok") return ranked;
+      const rankTokens = usageTokens(ranked.usage);
+      if (ranked.status !== "ok") return { ...ranked, ...base, evaluated: candidates.length, submitted: 0, aiTokens: rankTokens };
       const draftQuota = await state.takeQuota("drafts", 1, config.dailyDraftLimit);
-      if (!draftQuota.granted || !ranked.ranked.length) return { status: "ok", discovered: found.length, evaluated: candidates.length, submitted: 0 };
+      if (!draftQuota.granted || !ranked.ranked.length) return { status: "ok", ...base, evaluated: candidates.length, submitted: 0, aiTokens: rankTokens };
       const best = ranked.ranked[0];
       const generated = await ai.draft(best.candidate, best.language);
-      if (generated.status !== "ok") return generated;
+      const aiTokens = rankTokens + usageTokens(generated.usage);
+      if (generated.status !== "ok") return { ...generated, ...base, evaluated: candidates.length, submitted: 0, aiTokens };
       const submitted = await approval.submit({
         postId: String(best.candidate.sourcePostId),
         language: generated.language,
@@ -77,7 +102,7 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
         permalink: best.candidate.permalink || "",
         text: generated.text,
       });
-      if (submitted.status !== "ok") return submitted;
+      if (submitted.status !== "ok") return { ...submitted, ...base, evaluated: candidates.length, submitted: 0, aiTokens };
       const saved = await state.savePending({
         draftId: submitted.id,
         postId: String(best.candidate.sourcePostId),
@@ -85,8 +110,8 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
         text: generated.text,
         permalink: best.candidate.permalink || "",
       });
-      if (!saved) return { status: "failed", reason: "PENDING_STORE_ERROR" };
-      return { status: "ok", discovered: found.length, evaluated: candidates.length, submitted: 1, draftId: submitted.id };
+      if (!saved) return { status: "failed", reason: "PENDING_STORE_ERROR", ...base, evaluated: candidates.length, submitted: 0, aiTokens };
+      return { status: "ok", ...base, evaluated: candidates.length, submitted: 1, aiTokens, draftId: submitted.id };
     } finally { searchRunning = false; }
   }
 
@@ -96,7 +121,11 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
     if (!init.ready) return { status: "failed", reason: init.reason };
     await processPending();
     const first = await runSearch();
-    searchTimer = setInterval(() => runSearch().then(result => logger.log("Proactive search cycle", JSON.stringify(result))).catch(error => logger.error("Proactive search error", error?.message || String(error))), config.pollIntervalSeconds * 1000);
+    await sendSearchReport(first);
+    searchTimer = setInterval(() => runSearch().then(async result => {
+      logger.log("Proactive search cycle", JSON.stringify(result));
+      await sendSearchReport(result);
+    }).catch(error => logger.error("Proactive search error", error?.message || String(error))), config.pollIntervalSeconds * 1000);
     approvalTimer = setInterval(() => processPending().then(result => {
       if (result.published || result.skipped || result.failed) logger.log("Proactive approval cycle", JSON.stringify(result));
     }).catch(error => logger.error("Proactive approval error", error?.message || String(error))), config.approvalPollSeconds * 1000);
