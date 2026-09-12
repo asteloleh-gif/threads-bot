@@ -12,6 +12,7 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
   let searchRunning = false;
   let approvalRunning = false;
   const usageTokens = usage => Math.max(0, Number(usage?.total_tokens || 0) || (Number(usage?.prompt_tokens || 0) + Number(usage?.completion_tokens || 0)));
+  const usageCostMicrousd = usage => Math.max(0, Math.ceil(Number(usage?.prompt_tokens || 0) * 0.2 + Number(usage?.completion_tokens || 0) * 1.2));
 
   async function sendSearchReport(result) {
     if (typeof approval.report !== "function") return;
@@ -24,6 +25,7 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
       evaluated: Number(result?.evaluated || 0),
       submitted: Number(result?.submitted || 0),
       aiTokens: Number(result?.aiTokens || 0),
+      aiCostMicrousd: Number(result?.aiCostMicrousd || 0),
     };
     const sent = await approval.report(payload);
     if (sent.status !== "ok") logger.warn("Proactive report skipped", JSON.stringify({ reason: sent.reason || sent.status }));
@@ -82,19 +84,21 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
         else if (result.reason !== "MONITOR_DISABLED") logger.warn("Proactive monitor skipped", JSON.stringify({ monitorId: monitor.id, reason: result.reason || result.status }));
       }
       const filtered = found.filter(item => basicFilter(item, selfUsername));
-      const base = { ...stats, discovered: stats.scanned, eligible: filtered.length, aiTokens: 0 };
+      const base = { ...stats, discovered: stats.scanned, eligible: filtered.length, aiTokens: 0, aiCostMicrousd: 0 };
       const quota = await state.takeQuota("evaluations", Math.min(filtered.length, 25), config.dailyEvaluationLimit);
       const candidates = filtered.slice(0, quota.granted);
       if (!candidates.length) return { status: "ok", ...base, evaluated: 0, submitted: 0 };
       const ranked = await ai.rank(candidates);
       const rankTokens = usageTokens(ranked.usage);
-      if (ranked.status !== "ok") return { ...ranked, ...base, evaluated: candidates.length, submitted: 0, aiTokens: rankTokens };
+      const rankCost = usageCostMicrousd(ranked.usage);
+      if (ranked.status !== "ok") return { ...ranked, ...base, evaluated: candidates.length, submitted: 0, aiTokens: rankTokens, aiCostMicrousd: rankCost };
       const draftQuota = await state.takeQuota("drafts", 1, config.dailyDraftLimit);
-      if (!draftQuota.granted || !ranked.ranked.length) return { status: "ok", ...base, evaluated: candidates.length, submitted: 0, aiTokens: rankTokens };
+      if (!draftQuota.granted || !ranked.ranked.length) return { status: "ok", ...base, evaluated: candidates.length, submitted: 0, aiTokens: rankTokens, aiCostMicrousd: rankCost };
       const best = ranked.ranked[0];
       const generated = await ai.draft(best.candidate, best.language);
       const aiTokens = rankTokens + usageTokens(generated.usage);
-      if (generated.status !== "ok") return { ...generated, ...base, evaluated: candidates.length, submitted: 0, aiTokens };
+      const aiCostMicrousd = rankCost + usageCostMicrousd(generated.usage);
+      if (generated.status !== "ok") return { ...generated, ...base, evaluated: candidates.length, submitted: 0, aiTokens, aiCostMicrousd };
       const submitted = await approval.submit({
         postId: String(best.candidate.sourcePostId),
         language: generated.language,
@@ -102,7 +106,7 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
         permalink: best.candidate.permalink || "",
         text: generated.text,
       });
-      if (submitted.status !== "ok") return { ...submitted, ...base, evaluated: candidates.length, submitted: 0, aiTokens };
+      if (submitted.status !== "ok") return { ...submitted, ...base, evaluated: candidates.length, submitted: 0, aiTokens, aiCostMicrousd };
       const saved = await state.savePending({
         draftId: submitted.id,
         postId: String(best.candidate.sourcePostId),
@@ -110,8 +114,8 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
         text: generated.text,
         permalink: best.candidate.permalink || "",
       });
-      if (!saved) return { status: "failed", reason: "PENDING_STORE_ERROR", ...base, evaluated: candidates.length, submitted: 0, aiTokens };
-      return { status: "ok", ...base, evaluated: candidates.length, submitted: 1, aiTokens, draftId: submitted.id };
+      if (!saved) return { status: "failed", reason: "PENDING_STORE_ERROR", ...base, evaluated: candidates.length, submitted: 0, aiTokens, aiCostMicrousd };
+      return { status: "ok", ...base, evaluated: candidates.length, submitted: 1, aiTokens, aiCostMicrousd, draftId: submitted.id };
     } finally { searchRunning = false; }
   }
 
