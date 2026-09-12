@@ -20,6 +20,13 @@ function readMode(env, name, fallback) {
   return PROACTIVE_MODE_SET.has(value) ? value : fallback;
 }
 
+function readScheduleHours(env, name) {
+  const raw = String(env[name] || "").trim();
+  if (!raw) return Object.freeze([]);
+  const hours = [...new Set(raw.split(",").map(value => Number.parseInt(value.trim(), 10)).filter(value => Number.isInteger(value) && value >= 0 && value <= 23))].sort((a, b) => a - b);
+  return Object.freeze(hours);
+}
+
 function loadProactiveConfig(env = process.env) {
   const enabled = readBool(env, "PROACTIVE_ENABLED", false);
   const requestedMode = readMode(env, "PROACTIVE_MODE", "OFF");
@@ -30,6 +37,8 @@ function loadProactiveConfig(env = process.env) {
     mode: enabled ? requestedMode : "OFF",
     account,
     pollIntervalSeconds: readInt(env, "PROACTIVE_POLL_INTERVAL_SECONDS", 14400, 300, 86400),
+    scheduleHours: readScheduleHours(env, "PROACTIVE_SCHEDULE_HOURS"),
+    scheduleTimezone: String(env.PROACTIVE_TIMEZONE || "UTC").trim() || "UTC",
     approvalPollSeconds: readInt(env, "PROACTIVE_APPROVAL_POLL_SECONDS", 60, 30, 3600),
     candidateTtlHours: readInt(env, "PROACTIVE_CANDIDATE_TTL_HOURS", 72, 1, 720),
     maxPostAgeMinutes: readInt(env, "PROACTIVE_MAX_POST_AGE_MINUTES", 720, 1, 10080),
@@ -76,4 +85,4 @@ function loadMonitors(env = process.env, config = loadProactiveConfig(env)) {
   return Object.freeze(defaultMonitors(config.account, config.defaultLimit));
 }
 
-module.exports = { loadProactiveConfig, loadMonitors, defaultMonitors, PROACTIVE_MODES };
+module.exports = { loadProactiveConfig, loadMonitors, defaultMonitors, readScheduleHours, PROACTIVE_MODES };
