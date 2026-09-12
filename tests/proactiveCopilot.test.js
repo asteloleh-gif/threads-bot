@@ -49,6 +49,25 @@ test("AI service reserves hard token and monthly cost budgets before calls", asy
   assert.deepEqual(quotas[1].options, { scope: "month" });
 });
 
+test("cycle report includes actual token cost calculated from input/output usage", async () => {
+  const reports = [];
+  const runner = createCopilotRunner({
+    config: { enabled: true, mode: "COPILOT", maxPostAgeMinutes: 60, dailyEvaluationLimit: 10, dailyDraftLimit: 10 },
+    monitors: [{ id: "m", enabled: true }], selfUsername: "leo",
+    monitorService: { async runOnce() { return { status: "ok", discovered: 1, accepted: 1, candidates: [{ sourcePostId: "1", text: "A useful ecommerce post", authorUsername: "maker" }] }; } },
+    state: { async takeQuota(_kind, requested) { return { granted: requested }; }, async savePending() { return true; }, async init() { return { ready: true }; }, async listPending() { return []; } },
+    ai: {
+      async rank(candidates) { return { status: "ok", ranked: [{ candidate: candidates[0], language: "en" }], usage: { prompt_tokens: 2000, completion_tokens: 100, total_tokens: 2100 } }; },
+      async draft() { return { status: "ok", text: "Useful reply", language: "en", usage: { prompt_tokens: 300, completion_tokens: 50, total_tokens: 350 } }; },
+    },
+    approval: { configured() { return true; }, async submit() { return { status: "ok", id: "a".repeat(32) }; }, async report(value) { reports.push(value); return { status: "ok" }; } },
+    threads: {},
+  });
+  const result = await runner.runSearch();
+  assert.equal(result.aiTokens, 2450);
+  assert.equal(result.aiCostMicrousd, 640);
+});
+
 test("basic filters reject self, empty and link-only candidates", () => {
   assert.equal(basicFilter({ sourcePostId: "1", text: "https://example.com" }, "leo"), false);
   assert.equal(basicFilter({ sourcePostId: "1", text: "A sufficiently useful public post", authorUsername: "Leo" }, "leo"), false);
