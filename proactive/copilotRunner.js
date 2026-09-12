@@ -1,8 +1,8 @@
-function inspectCandidate(candidate, selfUsername, { allowImage = false } = {}) {
+function inspectCandidate(candidate, selfUsername, { allowImage = false, allowSelf = false } = {}) {
   const text = String(candidate?.text || "").trim();
   if (!candidate?.sourcePostId) return { ok: false, reason: "MISSING_POST_ID", textLength: text.length };
   if (text.length > 1500) return { ok: false, reason: "TEXT_TOO_LONG", textLength: text.length };
-  if (selfUsername && String(candidate.authorUsername || "").toLowerCase() === String(selfUsername).toLowerCase()) {
+  if (!allowSelf && selfUsername && String(candidate.authorUsername || "").toLowerCase() === String(selfUsername).toLowerCase()) {
     return { ok: false, reason: "SELF_AUTHORED", textLength: text.length };
   }
   if (/^(https?:\/\/\S+|[#@]\S+)$/i.test(text)) return { ok: false, reason: "LINK_OR_TAG_ONLY", textLength: text.length };
@@ -39,7 +39,7 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
   const usageCostMicrousd = usage => Math.max(0, Math.ceil(Number(usage?.prompt_tokens || 0) * 0.2 + Number(usage?.completion_tokens || 0) * 1.2));
 
   async function prepareCandidate(candidate) {
-    let verdict = inspectCandidate(candidate, selfUsername);
+    let verdict = inspectCandidate(candidate, selfUsername, { allowSelf: config.allowSelfTest });
     if (verdict.ok) return candidate;
 
     const canHydrate = ["EMPTY_TEXT", "TEXT_TOO_SHORT"].includes(verdict.reason)
@@ -59,7 +59,7 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
     const text = String(details.data?.text || candidate.text || "").trim();
     const media = vision.inspectTrustedThreadsMedia(details.data);
     if (media.kind !== "image") {
-      verdict = inspectCandidate({ ...candidate, text }, selfUsername);
+      verdict = inspectCandidate({ ...candidate, text }, selfUsername, { allowSelf: config.allowSelfTest });
       if (verdict.ok) return { ...candidate, text };
       logger.log("Proactive candidate rejected", JSON.stringify({ sourcePostId: String(candidate.sourcePostId), reason: media.kind === "unsupported" ? "UNSUPPORTED_MEDIA" : verdict.reason, textLength: text.length, mediaType: media.mediaType || candidate.mediaType || null }));
       return null;
@@ -70,7 +70,7 @@ function createCopilotRunner({ config, monitors, monitorService, state, ai, appr
       return null;
     }
     const hydrated = { ...candidate, text, media };
-    verdict = inspectCandidate(hydrated, selfUsername, { allowImage: true });
+    verdict = inspectCandidate(hydrated, selfUsername, { allowImage: true, allowSelf: config.allowSelfTest });
     if (!verdict.ok) {
       logger.log("Proactive candidate rejected", JSON.stringify({ sourcePostId: String(candidate.sourcePostId), reason: verdict.reason, textLength: verdict.textLength, mediaType: media.mediaType }));
       return null;
