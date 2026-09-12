@@ -57,6 +57,15 @@ test("AI service reserves hard token and monthly cost budgets before calls", asy
   assert.deepEqual(quotas[1].options, { scope: "month" });
 });
 
+test("controlled self-test can select the best candidate below the production score threshold", async () => {
+  const state = { async takeQuota(_kind, requested) { return { granted: requested }; } };
+  const service = createProactiveAiService({ apiKey: "key", state,
+    config: { dailyAiTokenLimit: 50000, monthlyAiCostMicrousdLimit: 1000000, allowSelfTest: true },
+    fetchImpl: async () => response(200, { choices: [{ message: { content: JSON.stringify({ items: [{ id: "1", score: 20, language: "en" }] }) } }], usage: { prompt_tokens: 10, completion_tokens: 2 } }) });
+  const result = await service.rank([{ sourcePostId: "1", text: "A controlled post for the approval workflow test." }]);
+  assert.equal(result.ranked.length, 1);
+});
+
 test("cycle report includes actual token cost calculated from input/output usage", async () => {
   const reports = [];
   const runner = createCopilotRunner({
