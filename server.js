@@ -51,9 +51,9 @@ const proactiveState = createCandidateRepository({ redisUrl: REDIS_URL, namespac
 const proactiveMonitor = createMonitorService({ config: proactiveConfig, discovery: threadsDiscovery, candidates: proactiveState });
 const proactiveApproval = createApprovalClient({ baseUrl: proactiveConfig.approvalBaseUrl, account: proactiveConfig.account, secret: proactiveConfig.approvalSecret });
 const proactiveAi = createProactiveAiService({ apiKey: OPENAI_API_KEY, model: proactiveConfig.openaiModel, state: proactiveState, config: proactiveConfig });
-const proactiveRunner = createCopilotRunner({ config: proactiveConfig, monitors: proactiveMonitors, monitorService: proactiveMonitor, state: proactiveState, ai: proactiveAi, approval: proactiveApproval, threads, selfUsername: THREADS_USERNAME });
 const vision = createVisionGuard({ apiKey: OPENAI_API_KEY, enabled: VISION_ENABLED, detail: VISION_DETAIL, timeoutMs: Number(OPENAI_TIMEOUT_MS) });
 const mediaReader = createThreadsMediaReader({ tokenManager: threads.tokenManager, fallbackToken: THREADS_ACCESS_TOKEN, timeoutMs: Number(VISION_METADATA_TIMEOUT_MS) });
+const proactiveRunner = createCopilotRunner({ config: proactiveConfig, monitors: proactiveMonitors, monitorService: proactiveMonitor, state: proactiveState, ai: proactiveAi, approval: proactiveApproval, threads, mediaReader, vision, selfUsername: THREADS_USERNAME });
 const SHORT_TEXT_THRESHOLD = Math.max(1, Number.parseInt(VISION_SHORT_TEXT_THRESHOLD, 10) || 24);
 
 app.get("/", (_q, r) => r.status(200).send("Leo Akastel Threads bot is running — v9.2.0"));
