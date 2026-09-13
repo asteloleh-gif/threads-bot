@@ -1,6 +1,8 @@
 const crypto = require("crypto");
 const { createContentRepository } = require("./contentRepository");
 const { createContentPipeline } = require("./contentPipeline");
+const { createContentReadModel } = require("./contentReadModel");
+const { runContentDryRun } = require("./contentDryRun");
 const { createModelRouter } = require("../ai/modelRouter");
 const { createBudgetManager } = require("../ai/budgetManager");
 const { createOpenAiJsonClient } = require("../ai/openAiJsonClient");
@@ -25,6 +27,7 @@ function createContentRuntime({
   env = process.env,
   quotaStore = null,
   aiClient = null,
+  contentRepository = null,
   uuid = () => crypto.randomUUID(),
 } = {}) {
   if (!postgresStore) throw new Error("Content runtime requires Postgres store");
@@ -32,7 +35,7 @@ function createContentRuntime({
   if (!publishEngine || typeof publishEngine.enqueue !== "function") throw new Error("Content runtime requires Publish Engine");
   if (!providerRegistry || typeof providerRegistry.findForAccount !== "function") throw new Error("Content runtime requires provider registry");
 
-  const repository = createContentRepository({ store: postgresStore });
+  const repository = contentRepository || createContentRepository({ store: postgresStore });
   const quotas = quotaStore || createRedisQuotaStore({
     redisUrl,
     namespace: String(env.CONTENT_AI_REDIS_NAMESPACE || "astel:content-ai:v1"),
@@ -59,6 +62,7 @@ function createContentRuntime({
     uuid,
   });
   const pipeline = createContentPipeline({ repository, publishEngine, uuid });
+  const readModel = createContentReadModel({ repository, publishEngine });
 
   let ready = false;
   let lastError = null;
@@ -204,12 +208,44 @@ function createContentRuntime({
     return pipeline.scheduleApprovedDraft(input);
   }
 
+  async function getBrief(briefId) {
+    requireEnabled();
+    return readModel.getBrief(briefId);
+  }
+
+  async function getDraft(draftId) {
+    requireEnabled();
+    return readModel.getDraft(draftId);
+  }
+
+  async function getWorkflowSnapshot({ draftId } = {}) {
+    requireEnabled();
+    return readModel.getWorkflowSnapshot({ draftId });
+  }
+
+  async function runEndToEndDryRun(input = {}) {
+    requireEnabled();
+    return runContentDryRun({
+      operations: {
+        generateBrief,
+        generateDraft,
+        reviewDraft,
+        decideApproval,
+        scheduleApprovedDraft,
+        getWorkflowSnapshot,
+      },
+      publishEngine,
+      input,
+    });
+  }
+
   async function close() {
     ready = false;
     await quotas.close?.();
   }
 
   function health() {
+    const publishing = publishEngine.health?.() || {};
     return {
       enabled: Boolean(enabled),
       ready: Boolean(ready),
@@ -219,6 +255,13 @@ function createContentRuntime({
       quota: quotas.health?.() || null,
       ai: ai.health(),
       pipeline: pipeline.health(),
+      readModel: readModel.health(),
+      e2eDryRun: {
+        available: Boolean(ready && publishing.enabled && publishing.dryRun),
+        publishEngineEnabled: Boolean(publishing.enabled),
+        publishEngineDryRun: Boolean(publishing.dryRun),
+        explicitHumanApprovalRequired: true,
+      },
     };
   }
 
@@ -230,9 +273,14 @@ function createContentRuntime({
     reviewDraft,
     decideApproval,
     scheduleApprovedDraft,
+    getBrief,
+    getDraft,
+    getWorkflowSnapshot,
+    runEndToEndDryRun,
     health,
     repository,
     pipeline,
+    readModel,
     ai,
   };
 }

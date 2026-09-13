@@ -264,3 +264,30 @@ Never put access tokens, secrets, passwords, private connection strings, or othe
 
 **Open questions / external verification:**
 - None blocking Block 5E. Keep all production mutation gates disabled while Block 5E is developed and tested end-to-end in dry-run.
+
+---
+
+## 2026-09-13 — Block 5E — End-to-End Dry-Run and Operator Read-Side
+
+**Status:** DONE
+
+**Done:**
+- Added the complete `Research → AI Brief → AI Draft → AI Review → explicit Human Approval → Scheduler → SIMULATED publish` verification path.
+- E2E execution fails closed unless Publish Engine is explicitly enabled in the isolated run and remains `dryRun=true`; the production Publish Engine stays disabled.
+- The E2E runner targets only its workflow-specific publish job and never calls a generic scheduler tick that could process unrelated jobs.
+- Added authenticated private operator read-side for brief, draft and joined workflow state (brief → draft → latest human approval → publish job).
+- Added an idempotent one-shot private E2E dry-run operation plus a complete operator runbook.
+- Regression proves the provider `publishPost` mutation boundary is never invoked by the E2E dry-run.
+- GitHub CI and EN Railway pre-deploy both passed 171/171 tests; EN `/health` deployment gate passed.
+- Production safety remained unchanged: Content Pipeline OFF, Content Control API OFF, Publish Engine OFF + dry-run, live content scheduling OFF, no content-pipeline Meta mutations.
+- The exact final tested tree is ported to `ru-bot` without merging divergent histories and verified through the RU Railway health gate as the final closure step.
+- Block 5 Content Pipeline is formally complete; Block 6 Hyper Crew Orchestrator may build on these boundaries but must not bypass human approval, idempotency, budgets, or Publish Engine safety gates.
+
+**Commits/PRs:** #46 (main); exact final tested tree ported to `ru-bot`
+
+**Regression:** 171/171 tests pass
+
+**Changed files/services:** `app/content/contentDryRun.js`, `app/content/contentReadModel.js`, Content Runtime/Control/Router, Publish Engine read API, Block 5E tests, `docs/content-pipeline-runbook.md`; EN/RU Railway app deployments.
+
+**Open questions / external verification:**
+- None blocking Block 6. Keep production content/control/publish mutation gates unchanged until a separately approved live-content rollout.

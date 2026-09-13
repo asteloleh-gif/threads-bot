@@ -34,6 +34,9 @@ function publicError(error) {
     "Approval decision must be APPROVED or REJECTED",
     "Human approval is required before scheduling",
     "Publish Engine must be enabled before content scheduling",
+    "Publish Engine must be enabled for end-to-end dry-run",
+    "End-to-end dry-run requires explicit APPROVED human decision",
+    "End-to-end content run requires Publish Engine dry-run",
     "Live content scheduling is not approved",
     "Unknown social account",
   ].find(prefix => message.startsWith(prefix));
@@ -89,6 +92,7 @@ function createContentControl({
       reviewDraft: () => runtime.reviewDraft(input),
       decideApproval: () => runtime.decideApproval(input),
       scheduleApprovedDraft: () => runtime.scheduleApprovedDraft(input),
+      runEndToEndDryRun: () => runtime.runEndToEndDryRun(input),
     };
     const handler = handlers[String(operation || "")];
     if (!handler) return { httpStatus: 404, body: { status: "failed", reason: "UNKNOWN_OPERATION" } };
@@ -118,6 +122,29 @@ function createContentControl({
     }
   }
 
+  async function read({ resource, input = {} } = {}) {
+    if (!enabled) return { httpStatus: 404, body: { status: "disabled" } };
+    if (!ready) return { httpStatus: 503, body: { status: "unavailable" } };
+
+    const handlers = {
+      brief: () => runtime.getBrief(input.briefId),
+      draft: () => runtime.getDraft(input.draftId),
+      workflow: () => runtime.getWorkflowSnapshot({ draftId: input.draftId }),
+    };
+    const handler = handlers[String(resource || "")];
+    if (!handler) return { httpStatus: 404, body: { status: "failed", reason: "UNKNOWN_RESOURCE" } };
+
+    try {
+      const result = await handler();
+      if (!result) return { httpStatus: 404, body: { status: "not_found" } };
+      return { httpStatus: 200, body: result };
+    } catch (error) {
+      const reason = publicError(error);
+      const notFound = reason === "Content brief not found" || reason === "Draft not found";
+      return { httpStatus: notFound ? 404 : 400, body: { status: "failed", reason } };
+    }
+  }
+
   async function close() {
     ready = false;
     await store.close?.();
@@ -130,10 +157,12 @@ function createContentControl({
       tokenConfigured: normalizeSecret(token).length >= 32,
       lastError,
       store: store.health?.() || null,
+      readSide: true,
+      e2eDryRun: runtime.health?.().e2eDryRun || null,
     };
   }
 
-  return { init, close, authenticate, run, health };
+  return { init, close, authenticate, run, read, health };
 }
 
 module.exports = {
