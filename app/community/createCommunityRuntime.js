@@ -52,6 +52,7 @@ function createCommunityRuntime({
 
   async function handleComment(c) {
     if (!safety.isEnabled()) return { status: "ignored", reason: "BOT_DISABLED" };
+    if (provider.health?.().configured === false) return { status: "ignored", reason: "PROVIDER_NOT_CONFIGURED" };
     if (!safety.isReady() || !humanLocks.isReady()) return { status: "ignored", reason: "SAFETY_STORE_UNAVAILABLE" };
 
     const commentId = provider.getCommentId(c);
@@ -243,6 +244,7 @@ function createCommunityRuntime({
     return {
       accountKey: account.key,
       platform: provider.platform,
+      configured: provider.health?.().configured !== false,
       enabled: safety.isEnabled(),
       dryRun: safety.isDryRun(),
       redis: safety.health(),
