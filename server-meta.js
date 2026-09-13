@@ -13,6 +13,8 @@ const legacy = require("./server");
 const { createMetaWebhookRouter } = require("./app/webhooks/metaWebhookRouter");
 const { createCommunityRuntime } = require("./app/community/createCommunityRuntime");
 const { createPlatformReplyGenerator } = require("./app/community/createPlatformReplyGenerator");
+const { createPublishRepository } = require("./app/publishing/publishRepository");
+const { createPublishEngine } = require("./app/publishing/publishEngine");
 const { loadProactiveConfig } = require("./config/proactive");
 
 const app = express();
@@ -25,7 +27,17 @@ const {
   MAX_MEMORY_TOKENS = "1000",
   PROACTIVE_PERMISSION_PROBE = "false",
   OPENAI_MODEL = "gpt-5.6-luna",
+  PUBLISH_ENGINE_ENABLED = "false",
+  PUBLISH_ENGINE_DRY_RUN = "true",
+  PUBLISH_POLL_INTERVAL_MS = "5000",
+  PUBLISH_BATCH_SIZE = "5",
+  PUBLISH_LEASE_MS = "60000",
 } = process.env;
+
+function bool(value, fallback = false) {
+  if (value == null || value === "") return fallback;
+  return String(value).trim().toLowerCase() === "true";
+}
 
 const platformReplyGenerator = createPlatformReplyGenerator({ env: process.env });
 const proactiveConfig = loadProactiveConfig();
@@ -44,6 +56,17 @@ for (const provider of legacy.socialContext.providers.list()) {
   });
   secondaryCommunity.set(provider.accountKey, runtime);
 }
+
+const publishRepository = createPublishRepository({ redisUrl: REDIS_URL });
+const publishEngine = createPublishEngine({
+  providerRegistry: legacy.socialContext.providers,
+  repository: publishRepository,
+  enabled: bool(PUBLISH_ENGINE_ENABLED, false),
+  dryRun: bool(PUBLISH_ENGINE_DRY_RUN, true),
+  pollIntervalMs: Number(PUBLISH_POLL_INTERVAL_MS),
+  batchSize: Number(PUBLISH_BATCH_SIZE),
+  leaseMs: Number(PUBLISH_LEASE_MS),
+});
 
 async function handleThreadsWebhook({ native }) {
   if (!legacy.safety.isEnabled()) {
@@ -101,7 +124,9 @@ app.get("/health", async (_req, res) => {
   const secondaryOk = secondary.every(item =>
     !item.enabled || (item.redis?.connected && item.humanLock?.connected)
   );
-  const ok = (!legacy.policy.redisRequired || redis.connected) && humanLock.connected && secondaryOk;
+  const publishing = publishEngine.health();
+  const publishingOk = !publishing.enabled || publishing.repository?.connected;
+  const ok = (!legacy.policy.redisRequired || redis.connected) && humanLock.connected && secondaryOk && publishingOk;
 
   res.status(ok ? 200 : 503).json({
     ok,
@@ -134,6 +159,7 @@ app.get("/health", async (_req, res) => {
       },
       secondary,
     },
+    publishing,
     proactive: {
       enabled: proactiveConfig.enabled,
       mode: proactiveConfig.mode,
@@ -166,8 +192,11 @@ async function start() {
   await legacy.humanLocks.init();
   for (const runtime of secondaryCommunity.values()) await runtime.init();
 
+  const publishStart = await publishEngine.start();
+  console.log("Publish engine startup", JSON.stringify(publishStart));
+
   app.listen(PORT, () => {
-    console.log(`Astel Social Engine listening on port ${PORT}; model=${OPENAI_MODEL}; providers=${legacy.socialContext.providers.list().length}; threadsEnabled=${legacy.safety.isEnabled()}; threadsDryRun=${legacy.safety.isDryRun()}; secondary=${secondaryCommunity.size}`);
+    console.log(`Astel Social Engine listening on port ${PORT}; model=${OPENAI_MODEL}; providers=${legacy.socialContext.providers.list().length}; threadsEnabled=${legacy.safety.isEnabled()}; threadsDryRun=${legacy.safety.isDryRun()}; secondary=${secondaryCommunity.size}; publishEnabled=${publishEngine.health().enabled}; publishDryRun=${publishEngine.health().dryRun}`);
   });
 
   if (PROACTIVE_PERMISSION_PROBE === "true") {
@@ -197,6 +226,8 @@ module.exports = {
   start,
   metaWebhookRouter,
   secondaryCommunity,
+  publishRepository,
+  publishEngine,
   handleThreadsWebhook,
   handleSecondaryWebhook,
 };
