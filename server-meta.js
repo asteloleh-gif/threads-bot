@@ -21,6 +21,9 @@ const { createDurableRepository } = require("./app/db/durableRepository");
 const { createAnalyticsRepository } = require("./app/analytics/analyticsRepository");
 const { createAnalyticsEngine } = require("./app/analytics/analyticsEngine");
 const { createContentRuntime } = require("./app/content/contentRuntime");
+const { createContentControlStore } = require("./app/content/contentControlStore");
+const { createContentControl } = require("./app/content/contentControl");
+const { createContentControlRouter } = require("./app/content/contentControlRouter");
 const { loadProactiveConfig } = require("./config/proactive");
 
 const app = express();
@@ -44,6 +47,10 @@ const {
   ANALYTICS_LOOKBACK_DAYS = "30",
   CONTENT_PIPELINE_ENABLED = "false",
   CONTENT_ALLOW_LIVE_SCHEDULING = "false",
+  CONTENT_CONTROL_API_ENABLED = "false",
+  CONTENT_CONTROL_API_TOKEN = "",
+  CONTENT_CONTROL_REDIS_NAMESPACE = "astel:content-control:v1",
+  CONTENT_CONTROL_IDEMPOTENCY_TTL_SECONDS = "86400",
 } = process.env;
 
 function bool(value, fallback = false) {
@@ -115,6 +122,20 @@ const contentRuntime = createContentRuntime({
   providerRegistry: legacy.socialContext.providers,
   env: process.env,
 });
+const contentControlStore = createContentControlStore({
+  redisUrl: REDIS_URL,
+  namespace: CONTENT_CONTROL_REDIS_NAMESPACE,
+  ttlSeconds: Number(CONTENT_CONTROL_IDEMPOTENCY_TTL_SECONDS),
+});
+const contentControl = createContentControl({
+  enabled: bool(CONTENT_CONTROL_API_ENABLED, false),
+  token: CONTENT_CONTROL_API_TOKEN,
+  runtime: contentRuntime,
+  store: contentControlStore,
+});
+if (bool(CONTENT_CONTROL_API_ENABLED, false)) {
+  app.use("/internal/content", createContentControlRouter({ control: contentControl }));
+}
 
 async function handleThreadsWebhook({ native, event }) {
   await persistDurable("threads-comment", () => durable.recordSocialEvent(event));
@@ -191,8 +212,10 @@ app.get("/health", async (_req, res) => {
   const analytics = analyticsEngine.health();
   const content = contentRuntime.health();
   const contentOk = !content.enabled || content.ready;
+  const control = contentControl.health();
+  const controlOk = !control.enabled || control.ready;
   const databaseOk = !database.required || database.connected;
-  const ok = (!legacy.policy.redisRequired || redis.connected) && humanLock.connected && secondaryOk && publishingOk && contentOk && databaseOk;
+  const ok = (!legacy.policy.redisRequired || redis.connected) && humanLock.connected && secondaryOk && publishingOk && contentOk && controlOk && databaseOk;
 
   res.status(ok ? 200 : 503).json({
     ok,
@@ -229,6 +252,7 @@ app.get("/health", async (_req, res) => {
     publishing,
     analytics,
     content,
+    contentControl: control,
     proactive: {
       enabled: proactiveConfig.enabled,
       mode: proactiveConfig.mode,
@@ -265,15 +289,17 @@ async function start() {
   for (const runtime of secondaryCommunity.values()) await runtime.init();
 
   const contentStart = await contentRuntime.init();
+  const controlStart = await contentControl.init();
   const publishStart = await publishEngine.start();
   const analyticsStart = await analyticsEngine.start();
   console.log("Content runtime startup", JSON.stringify(contentStart));
+  console.log("Content control startup", JSON.stringify(controlStart));
   console.log("Publish engine startup", JSON.stringify(publishStart));
   console.log("Analytics engine startup", JSON.stringify(analyticsStart));
   console.log("Durable database startup", JSON.stringify(databaseStart));
 
   app.listen(PORT, () => {
-    console.log(`Astel Social Engine listening on port ${PORT}; model=${OPENAI_MODEL}; providers=${legacy.socialContext.providers.list().length}; threadsEnabled=${legacy.safety.isEnabled()}; threadsDryRun=${legacy.safety.isDryRun()}; secondary=${secondaryCommunity.size}; publishEnabled=${publishEngine.health().enabled}; publishDryRun=${publishEngine.health().dryRun}; analyticsEnabled=${analyticsEngine.health().enabled}; contentEnabled=${contentRuntime.health().enabled}; databaseConnected=${postgresStore.isReady()}`);
+    console.log(`Astel Social Engine listening on port ${PORT}; model=${OPENAI_MODEL}; providers=${legacy.socialContext.providers.list().length}; threadsEnabled=${legacy.safety.isEnabled()}; threadsDryRun=${legacy.safety.isDryRun()}; secondary=${secondaryCommunity.size}; publishEnabled=${publishEngine.health().enabled}; publishDryRun=${publishEngine.health().dryRun}; analyticsEnabled=${analyticsEngine.health().enabled}; contentEnabled=${contentRuntime.health().enabled}; contentControlEnabled=${contentControl.health().enabled}; databaseConnected=${postgresStore.isReady()}`);
   });
 
   if (PROACTIVE_PERMISSION_PROBE === "true") {
@@ -308,6 +334,8 @@ module.exports = {
   analyticsRepository,
   analyticsEngine,
   contentRuntime,
+  contentControlStore,
+  contentControl,
   hotPublishRepository,
   publishRepository,
   publishEngine,

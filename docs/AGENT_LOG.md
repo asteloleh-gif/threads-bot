@@ -193,3 +193,74 @@ Never put access tokens, secrets, passwords, private connection strings, or othe
 - `PUBLISH_ENGINE_ENABLED=false` and dry-run protections remain intentional; Block 5A introduced no real scheduled or external publish.
 - `astel.us` Meta asset/webhook onboarding remains externally pending and will resume through the authenticated Meta DevTools MCP/Codex audit.
 - `npm audit` still reports 2 moderate vulnerabilities in the dependency tree; backlog, not a Block 5 blocker.
+
+---
+
+## 2026-09-13 — Block 5B — Shared AI Gateway, Routing and Budgets
+
+**Status:** DONE
+
+**Done:**
+- Added task-aware cheap/standard/reasoning model routing without introducing a second provider boundary.
+- Added fail-closed, account-scoped AI token/cost budgets and explicit pricing requirements.
+- Added a token-safe OpenAI JSON client and shared AI gateway for brief creation, post generation, and content review.
+- Persisted model, token, cost, latency, success/failure and budget-block telemetry to durable `agent_runs`; generated content is withheld if durable telemetry cannot be recorded.
+- Kept the layer disconnected from autonomous runtime execution and preserved all publishing/Meta mutation gates.
+
+**Commits/PRs:** #42 (main); exact tested tree subsequently ported to `ru-bot`
+
+**Regression:** 145/145 tests pass
+
+**Changed files/services:** shared content AI gateway/router, budget manager/quota boundary, durable agent telemetry integration, AI gateway regression tests.
+
+**Open questions / external verification:**
+- None blocking Block 5C. Production publishing remains disabled/dry-run.
+
+---
+
+## 2026-09-13 — Block 5C — Gated Content Runtime Composition
+
+**Status:** DONE
+
+**Done:**
+- Composed the durable content repository, shared AI gateway, approval-gated pipeline, dedicated Redis quota store, and Publish Engine boundary in the production composition root.
+- Added `CONTENT_PIPELINE_ENABLED=false` as the disabled-by-default runtime gate.
+- Enabled runtime fails closed unless PostgreSQL, Redis quota state, OpenAI configuration, and explicit pricing are ready.
+- Scheduling refuses to enqueue while Publish Engine is disabled and a second `CONTENT_ALLOW_LIVE_SCHEDULING` gate protects live scheduling.
+- Added content runtime state to `/health` without adding any public/admin mutation route.
+- EN and RU production deployments of the tested 5C tree succeeded before Block 5D work began.
+
+**Commits/PRs:** #43 (main); exact tested tree subsequently ported to `ru-bot`
+
+**Regression:** 153/153 tests pass
+
+**Changed files/services:** `app/content/contentRuntime.js`, dedicated AI quota state, `server-meta.js`, `.env.example`, content runtime regression tests; EN/RU Railway app deployments.
+
+**Open questions / external verification:**
+- Private operator mutation boundary intentionally deferred to Block 5D.
+- `CONTENT_PIPELINE_ENABLED=false`, `PUBLISH_ENGINE_ENABLED=false`, dry-run protections and no-live-scheduling remain intentional.
+
+---
+
+## 2026-09-13 — Block 5D — Private Content Control Plane
+
+**Status:** DONE
+
+**Done:**
+- Added a private `/internal/content/*` operator boundary that is mounted only when explicitly enabled.
+- Added bearer-token authentication with timing-safe comparison and a minimum 32-byte secret requirement.
+- Added mandatory `Idempotency-Key` handling with Redis-backed PROCESSING/COMPLETED/FAILED records, replay of completed operations, and fail-closed handling for duplicate/in-progress/ambiguous state.
+- Added private operations for AI brief generation, AI draft generation, AI review, human approval/rejection, and schedule handoff.
+- Control startup requires the gated content runtime to already be ready; arbitrary internal errors are not exposed to callers.
+- PR #44 passed CI and was merged to `main`; EN Railway deployment and `/health` gate passed.
+- Ported the final tested tree to `ru-bot` without merging divergent histories; RU deployment is verified separately as part of Block 5D closure.
+- Preserved safety posture: private Content Control API off by default, Content Pipeline off by default, Publish Engine disabled and dry-run, live scheduling blocked, no Meta mutation enabled.
+
+**Commits/PRs:** #44 (main); exact tested tree ported to `ru-bot`
+
+**Regression:** 164/164 tests pass
+
+**Changed files/services:** `app/content/contentControl.js`, `app/content/contentControlRouter.js`, `app/content/contentControlStore.js`, `server-meta.js`, `.env.example`, content-control regression tests; EN/RU Railway app deployments.
+
+**Open questions / external verification:**
+- None blocking Block 5E. Keep all production mutation gates disabled while Block 5E is developed and tested end-to-end in dry-run.
