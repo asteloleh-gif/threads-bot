@@ -342,3 +342,22 @@ Never put access tokens, secrets, passwords, private connection strings, or othe
 
 **Open questions / external verification:**
 - Local workstation installation and `/mcp` verification in Codex/Claude remain pending until a developer machine is available.
+
+## 2026-09-13 — Astel US onboarding foundation (in progress)
+
+**Status:** Phase A audited; isolated US configuration and shared-code hardening prepared. Meta operational validation remains blocked on securely provisioned credentials and development webhook delivery.
+
+**Done:**
+- Verified app 1991615571550659 remains in Development; portfolio 1069900484139703. Target IG astel.us 17841473220032439 links to Page Олег Акастелов 656083597578810.
+- Confirmed existing main/ru-bot baseline tree equality and healthy deployments. Existing Block 5 is complete; no Hyper Crew expansion.
+- Added signed IG/Page webhook ingress, strict target routing, malformed-array handling, account isolation profile, required durable persistence gate, post-mutation ambiguity hold, confirmed reply text persistence and per-account publishing dry-run enforcement.
+- Added dedicated US nonsecret environment profile and factual onboarding audit/runbook.
+- Created isolated Railway project astel-us (f47f4c43-ff54-49bf-8939-bf18a90554ed), production a77130b6-3bd2-4673-adf9-12fd8697abd0. Service/dependency provisioning follows validated code.
+
+**Regression:** 190/190 local tests pass (baseline 178; 12 added). Local Node24.19.0/npm11.17.0; pinned CI24.20.0/11.19.0 required before merge. New tests use synthetic credentials and mocked Meta mutations; no real replies.
+
+**Commits/PRs:** Feature branch codex/astel-us-onboarding; PR/CI/deployment evidence will be appended after verification.
+
+**Changed services:** New isolated empty US project only at this checkpoint. No existing service config/Meta settings changed; no tokens copied.
+
+**External blockers:** Astel app secret, Page/IG token grants/validity/expiry and OpenAI/brand knowledge configuration must be securely provisioned. No app webhooks currently subscribed. Real inbound dry-run and first approved replies pending. Privacy policy/category/icon, App Review and business legal verification remain incomplete. IG/FB publishing and insights providers remain unsupported.

@@ -32,11 +32,11 @@ function createFacebookAdapter({
     const events = [];
     if (body?.object && body.object !== "page") return events;
 
-    for (const entry of body?.entry || []) {
+    for (const entry of Array.isArray(body?.entry) ? body.entry : []) {
       const targetPageId = entry?.id ? String(entry.id) : null;
-      if (userId && targetPageId && targetPageId !== userId) continue;
+      if (!userId || targetPageId !== userId) continue;
 
-      for (const change of entry?.changes || []) {
+      for (const change of Array.isArray(entry?.changes) ? entry.changes : []) {
         if (change?.field !== "feed") continue;
         const value = change?.value;
         if (value?.item !== "comment" || value?.verb !== "add") continue;

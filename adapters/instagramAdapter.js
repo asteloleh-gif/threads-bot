@@ -32,14 +32,14 @@ function createInstagramAdapter({
     const events = [];
     if (body?.object && body.object !== "instagram") return events;
 
-    for (const entry of body?.entry || []) {
+    for (const entry of Array.isArray(body?.entry) ? body.entry : []) {
       const targetUserId = entry?.id ? String(entry.id) : null;
-      if (userId && targetUserId && targetUserId !== userId) continue;
+      if (!userId || targetUserId !== userId) continue;
 
-      for (const change of entry?.changes || []) {
+      for (const change of Array.isArray(entry?.changes) ? entry.changes : []) {
         if (!["comments", "live_comments"].includes(change?.field)) continue;
         const value = change?.value;
-        const sourceId = value?.id;
+        const sourceId = value?.comment_id || value?.id;
         if (!sourceId) continue;
 
         events.push(createSocialEvent({
@@ -47,7 +47,7 @@ function createInstagramAdapter({
           accountKey,
           type: SOCIAL_EVENT_TYPES.COMMENT_CREATED,
           sourceId,
-          rootId: value?.media?.id || null,
+          rootId: value?.media?.id || value?.media_id || null,
           parentId: value?.parent_id || null,
           text: value?.text || "",
           author: {
