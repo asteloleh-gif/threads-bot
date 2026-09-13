@@ -14,7 +14,10 @@ const { createMetaWebhookRouter } = require("./app/webhooks/metaWebhookRouter");
 const { createCommunityRuntime } = require("./app/community/createCommunityRuntime");
 const { createPlatformReplyGenerator } = require("./app/community/createPlatformReplyGenerator");
 const { createPublishRepository } = require("./app/publishing/publishRepository");
+const { createDurablePublishRepository } = require("./app/publishing/durablePublishRepository");
 const { createPublishEngine } = require("./app/publishing/publishEngine");
+const { createPostgresStore } = require("./app/db/postgresStore");
+const { createDurableRepository } = require("./app/db/durableRepository");
 const { loadProactiveConfig } = require("./config/proactive");
 
 const app = express();
@@ -42,6 +45,22 @@ function bool(value, fallback = false) {
 const platformReplyGenerator = createPlatformReplyGenerator({ env: process.env });
 const proactiveConfig = loadProactiveConfig();
 const secondaryCommunity = new Map();
+const postgresStore = createPostgresStore();
+const durable = createDurableRepository({ store: postgresStore });
+let lastDurableProjectionError = null;
+
+async function persistDurable(label, fn) {
+  if (!durable.isReady()) return false;
+  try {
+    await fn();
+    lastDurableProjectionError = null;
+    return true;
+  } catch (error) {
+    lastDurableProjectionError = error?.message || String(error);
+    console.error("Durable projection error", JSON.stringify({ label, error: lastDurableProjectionError }));
+    return false;
+  }
+}
 
 for (const provider of legacy.socialContext.providers.list()) {
   if (provider.platform === "threads") continue;
@@ -57,7 +76,8 @@ for (const provider of legacy.socialContext.providers.list()) {
   secondaryCommunity.set(provider.accountKey, runtime);
 }
 
-const publishRepository = createPublishRepository({ redisUrl: REDIS_URL });
+const hotPublishRepository = createPublishRepository({ redisUrl: REDIS_URL });
+const publishRepository = createDurablePublishRepository({ hotRepository: hotPublishRepository, durable });
 const publishEngine = createPublishEngine({
   providerRegistry: legacy.socialContext.providers,
   repository: publishRepository,
@@ -68,7 +88,8 @@ const publishEngine = createPublishEngine({
   leaseMs: Number(PUBLISH_LEASE_MS),
 });
 
-async function handleThreadsWebhook({ native }) {
+async function handleThreadsWebhook({ native, event }) {
+  await persistDurable("threads-comment", () => durable.recordSocialEvent(event));
   if (!legacy.safety.isEnabled()) {
     console.log("Bot disabled: Threads webhook acknowledged only");
     return { status: "ignored", reason: "BOT_DISABLED" };
@@ -82,12 +103,24 @@ async function handleThreadsWebhook({ native }) {
 }
 
 async function handleSecondaryWebhook({ platform, provider, event }) {
+  await persistDurable(`${platform}-comment`, () => durable.recordSocialEvent(event));
   const runtime = secondaryCommunity.get(provider.accountKey);
   if (!runtime) {
     console.error("Reply skipped", JSON.stringify({ platform, accountKey: provider.accountKey, reason: "COMMUNITY_RUNTIME_MISSING" }));
     return { status: "ignored", reason: "COMMUNITY_RUNTIME_MISSING" };
   }
   const result = await runtime.handleComment(event);
+  if (result?.replyId || result?.status) {
+    await persistDurable(`${platform}-reply`, () => durable.recordReply({
+      accountKey: provider.accountKey,
+      sourceCommentId: event?.sourceId,
+      replyId: result?.replyId || null,
+      status: result?.status || "UNKNOWN",
+      text: result?.replyText || null,
+      publishedAt: result?.replyId ? new Date() : null,
+      metadata: { reason: result?.reason || null, platform },
+    }));
+  }
   console.log("Community event processed", JSON.stringify({
     platform,
     accountKey: provider.accountKey,
@@ -120,13 +153,15 @@ app.get("/health", async (_req, res) => {
 
   const redis = legacy.safety.health();
   const humanLock = legacy.humanLocks.health();
+  const database = postgresStore.health();
   const secondary = Array.from(secondaryCommunity.values()).map(runtime => runtime.health());
   const secondaryOk = secondary.every(item =>
     !item.enabled || (item.redis?.connected && item.humanLock?.connected)
   );
   const publishing = publishEngine.health();
   const publishingOk = !publishing.enabled || publishing.repository?.connected;
-  const ok = (!legacy.policy.redisRequired || redis.connected) && humanLock.connected && secondaryOk && publishingOk;
+  const databaseOk = !database.required || database.connected;
+  const ok = (!legacy.policy.redisRequired || redis.connected) && humanLock.connected && secondaryOk && publishingOk && databaseOk;
 
   res.status(ok ? 200 : 503).json({
     ok,
@@ -135,6 +170,7 @@ app.get("/health", async (_req, res) => {
     dryRun: legacy.safety.isDryRun(),
     redis,
     humanLock,
+    database: { ...database, lastProjectionError: lastDurableProjectionError },
     ambiguousPending,
     policy: legacy.policy,
     limits: legacy.safety.limits,
@@ -187,6 +223,9 @@ app.post("/webhook", async (req, res) => {
 });
 
 async function start() {
+  const databaseStart = await postgresStore.init();
+  if (postgresStore.isReady()) await durable.syncAccounts(legacy.socialContext.accounts);
+
   if (legacy.threads.tokenManager?.init) await legacy.threads.tokenManager.init();
   await legacy.safety.init();
   await legacy.humanLocks.init();
@@ -194,9 +233,10 @@ async function start() {
 
   const publishStart = await publishEngine.start();
   console.log("Publish engine startup", JSON.stringify(publishStart));
+  console.log("Durable database startup", JSON.stringify(databaseStart));
 
   app.listen(PORT, () => {
-    console.log(`Astel Social Engine listening on port ${PORT}; model=${OPENAI_MODEL}; providers=${legacy.socialContext.providers.list().length}; threadsEnabled=${legacy.safety.isEnabled()}; threadsDryRun=${legacy.safety.isDryRun()}; secondary=${secondaryCommunity.size}; publishEnabled=${publishEngine.health().enabled}; publishDryRun=${publishEngine.health().dryRun}`);
+    console.log(`Astel Social Engine listening on port ${PORT}; model=${OPENAI_MODEL}; providers=${legacy.socialContext.providers.list().length}; threadsEnabled=${legacy.safety.isEnabled()}; threadsDryRun=${legacy.safety.isDryRun()}; secondary=${secondaryCommunity.size}; publishEnabled=${publishEngine.health().enabled}; publishDryRun=${publishEngine.health().dryRun}; databaseConnected=${postgresStore.isReady()}`);
   });
 
   if (PROACTIVE_PERMISSION_PROBE === "true") {
@@ -226,6 +266,9 @@ module.exports = {
   start,
   metaWebhookRouter,
   secondaryCommunity,
+  postgresStore,
+  durable,
+  hotPublishRepository,
   publishRepository,
   publishEngine,
   handleThreadsWebhook,
