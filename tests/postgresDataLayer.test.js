@@ -40,6 +40,56 @@ test("Postgres store exposes fail-safe health without leaking connection string"
   await store.close();
 });
 
+test("required Postgres failure rejects startup and remains unhealthy", async () => {
+  let ended = false;
+  const fakePool = {
+    on() {},
+    async query() { throw new Error("connect ECONNREFUSED 127.0.0.1:5432"); },
+    async end() { ended = true; },
+  };
+  const store = createPostgresStore({
+    connectionString: "postgresql://invalid:invalid@127.0.0.1:5432/db",
+    required: true,
+    migrate: false,
+    poolFactory: () => fakePool,
+  });
+
+  await assert.rejects(store.init(), /ECONNREFUSED/);
+  const health = store.health();
+  assert.equal(ended, true);
+  assert.equal(health.required, true);
+  assert.equal(health.connected, false);
+  assert.match(health.lastError, /ECONNREFUSED/);
+});
+
+test("required Postgres runtime pool error marks store unhealthy after successful startup", async () => {
+  let poolErrorHandler = null;
+  const fakePool = {
+    on(event, handler) {
+      if (event === "error") poolErrorHandler = handler;
+    },
+    async query() { return { rows: [{ ok: 1 }] }; },
+    async end() {},
+  };
+  const store = createPostgresStore({
+    connectionString: "postgresql://example/db",
+    required: true,
+    migrate: false,
+    poolFactory: () => fakePool,
+  });
+
+  await store.init();
+  assert.equal(store.health().connected, true);
+  assert.equal(typeof poolErrorHandler, "function");
+
+  poolErrorHandler(new Error("connection terminated unexpectedly"));
+  const health = store.health();
+  assert.equal(health.required, true);
+  assert.equal(health.connected, false);
+  assert.match(health.lastError, /connection terminated unexpectedly/);
+  await store.close();
+});
+
 test("Postgres store skips cleanly when optional database is not configured", async () => {
   const store = createPostgresStore({ connectionString: "", required: false, migrate: false });
   const result = await store.init();
