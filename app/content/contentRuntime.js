@@ -114,7 +114,15 @@ function createContentRuntime({
       brief: generated.value,
       metadata: { ...metadata, workflowId, aiRunId: generated.runId },
     });
-    return { status: "ok", workflowId, aiRunId: generated.runId, ...stored };
+    return {
+      status: "ok",
+      workflowStatus: stored.status,
+      workflowId,
+      aiRunId: generated.runId,
+      briefId: stored.briefId,
+      accountKey: stored.accountKey,
+      brief: stored.brief,
+    };
   }
 
   async function generateDraft({ briefId, constraints = {}, language = "auto", metadata = {} } = {}) {
@@ -138,7 +146,14 @@ function createContentRuntime({
       source: "ai-content-gateway",
       metadata: { ...metadata, aiRunId: generated.runId, language: generated.value.language },
     });
-    return { status: "ok", aiRunId: generated.runId, ...stored };
+    return {
+      status: "ok",
+      workflowStatus: stored.status,
+      aiRunId: generated.runId,
+      draftId: stored.draftId,
+      accountKey: stored.accountKey,
+      content: stored.content,
+    };
   }
 
   async function reviewDraft({ draftId, policy = null, metadata = {} } = {}) {
@@ -163,7 +178,15 @@ function createContentRuntime({
       notes: reviewed.value.notes,
       metadata: { ...metadata, aiRunId: reviewed.runId, risks: reviewed.value.risks },
     });
-    return { status: "ok", aiRunId: reviewed.runId, review: reviewed.value, ...stored };
+    return {
+      status: "ok",
+      workflowStatus: stored.status,
+      aiRunId: reviewed.runId,
+      review: reviewed.value,
+      draftId: stored.draftId,
+      approvalId: stored.approvalId || null,
+      draft: stored.draft,
+    };
   }
 
   async function decideApproval(input = {}) {
