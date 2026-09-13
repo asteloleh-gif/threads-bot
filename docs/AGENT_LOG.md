@@ -166,3 +166,30 @@ Never put access tokens, secrets, passwords, private connection strings, or othe
 - Instagram/Facebook Meta onboarding remains pending; their analytics capabilities must not be enabled until live permissions/assets are verified.
 - Deletion of obsolete EN Railway services `threads-bot-LdTD` and `verify-threads-bot` remains staged pending manual 2FA Apply.
 - `npm audit` still reports 2 moderate vulnerabilities in the dependency tree; backlog, not a Block 5 blocker.
+
+---
+
+## 2026-09-13 — Block 5A — Approval-gated Content Workflow Core
+
+**Status:** DONE
+
+**Done:**
+- Added a durable content workflow repository over the existing `content_briefs`, `drafts`, and `approvals` PostgreSQL tables.
+- Added the core `Research/Brief → Draft → Review → Human Approval → Schedule` state machine.
+- Enforced confirmed human approval before a draft can enter the existing Publish Engine; scheduling uses a draft-scoped dedupe key and records approval provenance.
+- Added fail-closed repository behavior and regression coverage for PASS/REVISE/REJECT, human approval/rejection, and exactly-once enqueue intent.
+- Kept runtime behavior unchanged: no new HTTP/admin route, no autonomous content run, no new Meta mutation, and production Publish Engine flags remain disabled/dry-run.
+- Ported the exact tested main tree to `ru-bot` without merging divergent histories; EN and RU Railway deployments both succeeded.
+- Confirmed the previously obsolete EN Railway services are now deleted; only the app, Redis, and Postgres remain in the EN production project.
+
+**Commits/PRs:** #41 (main); exact tested tree port commit `527436e77a8c9bb37f24fd9fbcdd991b68ac5467` (`ru-bot`)
+
+**Regression:** 137/137 tests pass
+
+**Changed files/services:** `app/content/contentRepository.js`, `app/content/contentPipeline.js`, `tests/contentPipeline.test.js`; EN/RU Railway app deployments.
+
+**Open questions / external verification:**
+- Runtime composition/admin boundary for the Content Pipeline is intentionally deferred to the next Block 5 slice.
+- `PUBLISH_ENGINE_ENABLED=false` and dry-run protections remain intentional; Block 5A introduced no real scheduled or external publish.
+- `astel.us` Meta asset/webhook onboarding remains externally pending and will resume through the authenticated Meta DevTools MCP/Codex audit.
+- `npm audit` still reports 2 moderate vulnerabilities in the dependency tree; backlog, not a Block 5 blocker.
