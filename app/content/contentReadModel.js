@@ -64,9 +64,8 @@ function createContentReadModel({ repository, publishEngine } = {}) {
   if (!repository || typeof repository.getBrief !== "function" || typeof repository.getDraft !== "function") {
     throw new Error("Content read model requires content repository");
   }
-  if (!publishEngine || typeof publishEngine.getJob !== "function") {
-    throw new Error("Content read model requires Publish Engine read access");
-  }
+  if (!publishEngine) throw new Error("Content read model requires Publish Engine");
+  const publishReadAvailable = typeof publishEngine.getJob === "function";
 
   async function getBrief(briefId) {
     return publicBrief(await repository.getBrief(briefId));
@@ -85,7 +84,7 @@ function createContentReadModel({ repository, publishEngine } = {}) {
 
     const [briefRow, publishJob] = await Promise.all([
       briefId ? repository.getBrief(briefId) : null,
-      publishJobId ? publishEngine.getJob(publishJobId) : null,
+      publishJobId && publishReadAvailable ? publishEngine.getJob(publishJobId) : null,
     ]);
 
     return {
@@ -96,6 +95,7 @@ function createContentReadModel({ repository, publishEngine } = {}) {
       gates: {
         humanApprovalRequired: true,
         publishing: publishEngine.health?.() || null,
+        publishReadAvailable,
       },
     };
   }
@@ -107,6 +107,7 @@ function createContentReadModel({ repository, publishEngine } = {}) {
     health: () => ({
       repository: repository.health?.() || null,
       publishing: publishEngine.health?.() || null,
+      publishReadAvailable,
       readOnly: true,
     }),
   };
