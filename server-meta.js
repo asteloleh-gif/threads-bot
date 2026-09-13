@@ -11,6 +11,7 @@ require("dotenv").config();
 
 const legacy = require("./server");
 const { createMetaWebhookRouter } = require("./app/webhooks/metaWebhookRouter");
+const { createMetaWebhookSignature, captureMetaRawBody } = require("./app/webhooks/metaWebhookSignature");
 const { createCommunityRuntime } = require("./app/community/createCommunityRuntime");
 const { createPlatformReplyGenerator } = require("./app/community/createPlatformReplyGenerator");
 const { createPublishRepository } = require("./app/publishing/publishRepository");
@@ -28,7 +29,7 @@ const { createHyperCrewOrchestrator } = require("./app/orchestration/hyperCrewOr
 const { loadProactiveConfig } = require("./config/proactive");
 
 const app = express();
-app.use(bodyParser.json());
+app.use(bodyParser.json({ verify: captureMetaRawBody }));
 
 const {
   REDIS_URL,
@@ -89,6 +90,11 @@ for (const provider of legacy.socialContext.providers.list()) {
     policy: legacy.policy,
     getContext: legacy.getContext,
     generateReply: platformReplyGenerator,
+    canPublish: async () => {
+      if (!postgresStore.isRequired()) return true;
+      try { await postgresStore.query("SELECT 1 AS ok"); return true; }
+      catch (_) { return false; }
+    },
     maxMemoryMessages: Number(MAX_MEMORY_MESSAGES),
     maxMemoryTokens: Number(MAX_MEMORY_TOKENS),
   });
@@ -159,7 +165,10 @@ async function handleThreadsWebhook({ native, event }) {
 }
 
 async function handleSecondaryWebhook({ platform, provider, event }) {
-  await persistDurable(`${platform}-comment`, () => durable.recordSocialEvent(event));
+  const persisted = await persistDurable(`${platform}-comment`, () => durable.recordSocialEvent(event));
+  if (!persisted && postgresStore.isRequired()) {
+    return { status: "ignored", reason: "DURABLE_STORE_UNAVAILABLE" };
+  }
   const runtime = secondaryCommunity.get(provider.accountKey);
   if (!runtime) {
     console.error("Reply skipped", JSON.stringify({ platform, accountKey: provider.accountKey, reason: "COMMUNITY_RUNTIME_MISSING" }));
@@ -279,7 +288,8 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-app.post("/webhook", async (req, res) => {
+app.post("/webhook", createMetaWebhookSignature(), async (req, res) => {
+  if (postgresStore.isRequired() && !postgresStore.isReady()) return res.sendStatus(503);
   res.sendStatus(200);
   try {
     const result = await metaWebhookRouter.dispatch(req.body);
@@ -293,7 +303,7 @@ async function start() {
   const databaseStart = await postgresStore.init();
   if (postgresStore.isReady()) await durable.syncAccounts(legacy.socialContext.accounts);
 
-  if (legacy.threads.tokenManager?.init) await legacy.threads.tokenManager.init();
+  if (legacy.threads.account?.enabled && legacy.threads.tokenManager?.init) await legacy.threads.tokenManager.init();
   await legacy.safety.init();
   await legacy.humanLocks.init();
   for (const runtime of secondaryCommunity.values()) await runtime.init();

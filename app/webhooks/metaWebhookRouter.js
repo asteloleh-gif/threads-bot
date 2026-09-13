@@ -14,7 +14,7 @@ function detectMetaPlatform(body = {}) {
   if (object) return null;
   if (Array.isArray(body?.values)) return "threads";
 
-  const changes = (body?.entry || []).flatMap(entry => entry?.changes || []);
+  const changes = (Array.isArray(body?.entry) ? body.entry : []).flatMap(entry => Array.isArray(entry?.changes) ? entry.changes : []);
   if (changes.some(change => change?.field === "replies")) return "threads";
   if (changes.some(change => change?.field === "comments")) return "threads";
   return null;

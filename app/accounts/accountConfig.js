@@ -75,7 +75,7 @@ function optionalPlatformAccount(env, platform) {
     userId: env[`${prefix}_USER_ID`],
     username,
     accessToken: env[`${prefix}_ACCESS_TOKEN`],
-    verifyToken: env[`${prefix}_VERIFY_TOKEN`] || env.THREADS_VERIFY_TOKEN,
+    verifyToken: env[`${prefix}_VERIFY_TOKEN`] || (bool(env.SOCIAL_REQUIRE_BRAND_ISOLATION) ? null : env.THREADS_VERIFY_TOKEN),
     enabled: bool(env[`${prefix}_ENABLED`], false),
     dryRun: bool(env[`${prefix}_DRY_RUN`], true),
   });
@@ -86,6 +86,10 @@ function loadSocialAccounts(env = process.env) {
   for (const platform of ["instagram", "facebook"]) {
     const account = optionalPlatformAccount(env, platform);
     if (account) accounts.push(account);
+  }
+  if (bool(env.SOCIAL_REQUIRE_BRAND_ISOLATION)) {
+    const brand = normalize(env.SOCIAL_BRAND).toLowerCase();
+    if (!brand || accounts.some(account => account.brand !== brand)) throw new Error("SOCIAL_BRAND_ISOLATION_REQUIRED");
   }
   return Object.freeze(accounts);
 }

@@ -12,6 +12,7 @@ function createCommunityRuntime({
   getContext,
   generateReply,
   logInteraction,
+  canPublish = async () => true,
   maxMemoryMessages = 8,
   maxMemoryTokens = 1000,
   namespace,
@@ -149,6 +150,7 @@ function createCommunityRuntime({
     const replyNumber = reservation.replyNumber;
     const closeConversation = policy.closingEnabled && replyNumber === policy.closingAtReply;
     let replyText = null;
+    let mutationMayHaveCommitted = false;
     try {
       if (await humanLocks.isLocked(branchKey)) {
         await safety.rollback(reservation);
@@ -202,8 +204,15 @@ function createCommunityRuntime({
         return { status: "ignored", reason: "HUMAN_LOCKED" };
       }
 
+      if (!(await canPublish())) {
+        await safety.rollback(reservation);
+        return { status: "ignored", reason: "DURABLE_STORE_UNAVAILABLE" };
+      }
       let result;
-      try { result = await provider.reply(commentId, replyText); }
+      try {
+        mutationMayHaveCommitted = true;
+        result = await provider.reply(commentId, replyText);
+      }
       catch (_) {
         try { await safety.markAmbiguous(reservation); } catch (_) {}
         return { status: "ambiguous", reason: "UNEXPECTED_PUBLISH_EXCEPTION" };
@@ -222,7 +231,7 @@ function createCommunityRuntime({
             replyText,
           });
         }
-        return { status: "published", replyId: result.id };
+        return { status: "published", replyId: result.id, replyText };
       }
 
       if (result.status === "ambiguous") {
@@ -230,9 +239,14 @@ function createCommunityRuntime({
         return { status: "ambiguous", reason: "AMBIGUOUS_PUBLISH" };
       }
 
+      mutationMayHaveCommitted = false;
       await safety.rollback(reservation);
       return { status: "ignored", reason: "DEFINITIVE_PUBLISH_FAILURE" };
     } catch (error) {
+      if (mutationMayHaveCommitted) {
+        try { await safety.markAmbiguous(reservation); } catch (_) {}
+        return { status: "ambiguous", reason: "PUBLISH_STATE_OUTCOME_UNKNOWN" };
+      }
       try { await safety.rollback(reservation); } catch (_) {}
       return { status: "ignored", reason: "COMMENT_PREPARATION_ERROR", error: error?.message || String(error) };
     } finally {
