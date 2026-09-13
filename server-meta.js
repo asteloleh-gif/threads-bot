@@ -20,6 +20,7 @@ const { createPostgresStore } = require("./app/db/postgresStore");
 const { createDurableRepository } = require("./app/db/durableRepository");
 const { createAnalyticsRepository } = require("./app/analytics/analyticsRepository");
 const { createAnalyticsEngine } = require("./app/analytics/analyticsEngine");
+const { createContentRuntime } = require("./app/content/contentRuntime");
 const { loadProactiveConfig } = require("./config/proactive");
 
 const app = express();
@@ -41,6 +42,8 @@ const {
   ANALYTICS_INTERVAL_MS = "21600000",
   ANALYTICS_MAX_POSTS_PER_ACCOUNT = "25",
   ANALYTICS_LOOKBACK_DAYS = "30",
+  CONTENT_PIPELINE_ENABLED = "false",
+  CONTENT_ALLOW_LIVE_SCHEDULING = "false",
 } = process.env;
 
 function bool(value, fallback = false) {
@@ -101,6 +104,16 @@ const analyticsEngine = createAnalyticsEngine({
   intervalMs: Number(ANALYTICS_INTERVAL_MS),
   maxPostsPerAccount: Number(ANALYTICS_MAX_POSTS_PER_ACCOUNT),
   lookbackDays: Number(ANALYTICS_LOOKBACK_DAYS),
+});
+const contentRuntime = createContentRuntime({
+  enabled: bool(CONTENT_PIPELINE_ENABLED, false),
+  allowLiveScheduling: bool(CONTENT_ALLOW_LIVE_SCHEDULING, false),
+  redisUrl: REDIS_URL,
+  postgresStore,
+  durable,
+  publishEngine,
+  providerRegistry: legacy.socialContext.providers,
+  env: process.env,
 });
 
 async function handleThreadsWebhook({ native, event }) {
@@ -176,8 +189,10 @@ app.get("/health", async (_req, res) => {
   const publishing = publishEngine.health();
   const publishingOk = !publishing.enabled || publishing.repository?.connected;
   const analytics = analyticsEngine.health();
+  const content = contentRuntime.health();
+  const contentOk = !content.enabled || content.ready;
   const databaseOk = !database.required || database.connected;
-  const ok = (!legacy.policy.redisRequired || redis.connected) && humanLock.connected && secondaryOk && publishingOk && databaseOk;
+  const ok = (!legacy.policy.redisRequired || redis.connected) && humanLock.connected && secondaryOk && publishingOk && contentOk && databaseOk;
 
   res.status(ok ? 200 : 503).json({
     ok,
@@ -213,6 +228,7 @@ app.get("/health", async (_req, res) => {
     },
     publishing,
     analytics,
+    content,
     proactive: {
       enabled: proactiveConfig.enabled,
       mode: proactiveConfig.mode,
@@ -248,14 +264,16 @@ async function start() {
   await legacy.humanLocks.init();
   for (const runtime of secondaryCommunity.values()) await runtime.init();
 
+  const contentStart = await contentRuntime.init();
   const publishStart = await publishEngine.start();
   const analyticsStart = await analyticsEngine.start();
+  console.log("Content runtime startup", JSON.stringify(contentStart));
   console.log("Publish engine startup", JSON.stringify(publishStart));
   console.log("Analytics engine startup", JSON.stringify(analyticsStart));
   console.log("Durable database startup", JSON.stringify(databaseStart));
 
   app.listen(PORT, () => {
-    console.log(`Astel Social Engine listening on port ${PORT}; model=${OPENAI_MODEL}; providers=${legacy.socialContext.providers.list().length}; threadsEnabled=${legacy.safety.isEnabled()}; threadsDryRun=${legacy.safety.isDryRun()}; secondary=${secondaryCommunity.size}; publishEnabled=${publishEngine.health().enabled}; publishDryRun=${publishEngine.health().dryRun}; analyticsEnabled=${analyticsEngine.health().enabled}; databaseConnected=${postgresStore.isReady()}`);
+    console.log(`Astel Social Engine listening on port ${PORT}; model=${OPENAI_MODEL}; providers=${legacy.socialContext.providers.list().length}; threadsEnabled=${legacy.safety.isEnabled()}; threadsDryRun=${legacy.safety.isDryRun()}; secondary=${secondaryCommunity.size}; publishEnabled=${publishEngine.health().enabled}; publishDryRun=${publishEngine.health().dryRun}; analyticsEnabled=${analyticsEngine.health().enabled}; contentEnabled=${contentRuntime.health().enabled}; databaseConnected=${postgresStore.isReady()}`);
   });
 
   if (PROACTIVE_PERMISSION_PROBE === "true") {
@@ -289,6 +307,7 @@ module.exports = {
   durable,
   analyticsRepository,
   analyticsEngine,
+  contentRuntime,
   hotPublishRepository,
   publishRepository,
   publishEngine,
