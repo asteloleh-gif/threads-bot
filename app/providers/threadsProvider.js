@@ -1,4 +1,5 @@
 const { createThreadsAdapter } = require("../../adapters/threadsAdapter");
+const { SOCIAL_EVENT_TYPES, createSocialEvent } = require("../events/socialEvent");
 const { providerCapabilities } = require("./socialProvider");
 
 function createThreadsProvider({ account, adapterFactory = createThreadsAdapter } = {}) {
@@ -26,6 +27,30 @@ function createThreadsProvider({ account, adapterFactory = createThreadsAdapter 
     }),
 
     parseWebhook: body => adapter.parseWebhook(body),
+    normalizeWebhookEvent(native) {
+      const sourceId = adapter.getCommentId(native);
+      if (!sourceId) return null;
+      return createSocialEvent({
+        platform: "threads",
+        accountKey: account.key,
+        type: SOCIAL_EVENT_TYPES.COMMENT_CREATED,
+        sourceId,
+        rootId: adapter.getRootPostId(native),
+        parentId: adapter.getParentId(native),
+        text: adapter.getCommentText(native) || "",
+        author: {
+          id: adapter.getAuthorId(native),
+          username: adapter.getAuthorUsername(native),
+        },
+        surface: "THREADS",
+        timestamp: native?.timestamp || null,
+        metadata: {
+          webhookTargetId: adapter.getWebhookTargetId(native),
+          parentAuthorId: adapter.getParentAuthorId(native),
+          parentAuthorUsername: adapter.getParentAuthorUsername(native),
+        },
+      });
+    },
     publishReply: (parentId, text) => adapter.reply(parentId, text),
     health() {
       return {
@@ -36,9 +61,11 @@ function createThreadsProvider({ account, adapterFactory = createThreadsAdapter 
     },
   };
 
-  // Compatibility surface for the existing real-time Reply Engine. Block 0
-  // introduces the provider boundary without changing runtime semantics.
+  // Compatibility surface for the existing real-time Reply Engine. The native
+  // adapter methods remain available while cross-platform routing uses the
+  // normalized SocialEvent side channel above.
   return Object.assign(provider, adapter, {
+    normalizeWebhookEvent: provider.normalizeWebhookEvent,
     reply: (parentId, text) => provider.publishReply(parentId, text),
   });
 }
