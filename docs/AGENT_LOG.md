@@ -291,3 +291,30 @@ Never put access tokens, secrets, passwords, private connection strings, or othe
 
 **Open questions / external verification:**
 - None blocking Block 6. Keep production content/control/publish mutation gates unchanged until a separately approved live-content rollout.
+
+---
+
+## 2026-09-13 — Block 6A — Hyper Crew Orchestrator Shell
+
+**Status:** DONE
+
+**Done:**
+- Added an immutable `Research → Content Strategist → Copywriter → Content Reviewer → Human Approval` crew graph.
+- Human approval is a non-autonomous hard gate and the crew graph rejects any node that claims external mutation ownership.
+- Added a disabled-by-default orchestrator over the existing Content Runtime; no second LLM client, model router, budget counter, or AI telemetry stack was introduced.
+- The orchestrator delegates brief/draft/review work through Content Runtime and stops at `AWAITING_HUMAN_APPROVAL`; it has no auto-approval, auto-schedule, or publish path.
+- Persisted top-level orchestration state through the existing durable `agent_runs` boundary and fail-closed when durable orchestration telemetry cannot be written.
+- Added `/health` visibility and `HYPER_CREW_ENABLED=false` as the production gate.
+- GitHub CI and EN Railway pre-deploy passed 178/178 tests; EN `/health` deployment gate passed.
+- EN production startup verified `hyperCrewEnabled=false`, `contentEnabled=false`, `contentControlEnabled=false`, `publishEnabled=false`, `publishDryRun=true`; Hyper Crew startup was skipped with `HYPER_CREW_DISABLED`.
+- Exact final tested tree is ported to `ru-bot` without merging divergent histories and verified through the RU Railway health gate as the closure step.
+- No Content Pipeline live publishing or new Meta mutation was enabled.
+
+**Commits/PRs:** #47 (main); exact final tested tree ported to `ru-bot`
+
+**Regression:** 178/178 tests pass
+
+**Changed files/services:** `app/orchestration/*`, `server-meta.js`, `.env.example`, `tests/hyperCrewOrchestrator.test.js`, `docs/hyper-crew-orchestrator.md`; EN/RU Railway app deployments.
+
+**Open questions / external verification:**
+- None blocking Block 6B. Keep `HYPER_CREW_ENABLED=false` and all content/control/publish mutation gates unchanged until separately approved.
