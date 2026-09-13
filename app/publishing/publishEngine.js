@@ -43,6 +43,12 @@ function createPublishEngine({
     return { ...stored, job, provider: provider.platform };
   }
 
+  async function getJob(id) {
+    if (!id) return null;
+    if (!repository.isReady?.()) throw new Error("Publish repository unavailable");
+    return repository.get(id);
+  }
+
   async function processJob(id) {
     const claimToken = crypto.randomUUID();
     const claimed = await repository.claim(id, claimToken, { now: now(), leaseMs });
@@ -180,7 +186,7 @@ function createPublishEngine({
     };
   }
 
-  return { enqueue, processJob, tick, start, stop, health };
+  return { enqueue, getJob, processJob, tick, start, stop, health };
 }
 
 module.exports = { createPublishEngine };
