@@ -1,5 +1,6 @@
 const { createThreadsAdapter } = require("../../adapters/threadsAdapter");
 const { createThreadsPostPublisher } = require("../../adapters/threadsPostPublisher");
+const { createThreadsInsightsAdapter } = require("../../adapters/threadsInsightsAdapter");
 const { SOCIAL_EVENT_TYPES, createSocialEvent } = require("../events/socialEvent");
 const { providerCapabilities } = require("./socialProvider");
 
@@ -7,6 +8,7 @@ function createThreadsProvider({
   account,
   adapterFactory = createThreadsAdapter,
   postPublisherFactory = createThreadsPostPublisher,
+  insightsAdapterFactory = createThreadsInsightsAdapter,
 } = {}) {
   if (!account) throw new Error("Threads account config is required");
   if (account.platform !== "threads") throw new Error(`Threads provider cannot serve ${account.platform}`);
@@ -16,6 +18,10 @@ function createThreadsProvider({
     userId: account.userId,
   });
   const postPublisher = postPublisherFactory({
+    tokenManager: adapter.tokenManager,
+    fallbackAccessToken: account.accessToken,
+  });
+  const insights = insightsAdapterFactory({
     tokenManager: adapter.tokenManager,
     fallbackAccessToken: account.accessToken,
   });
@@ -29,7 +35,7 @@ function createThreadsProvider({
       publishPosts: true,
       publishReplies: true,
       discovery: true,
-      insights: false,
+      insights: true,
       images: false,
       video: false,
       carousel: false,
@@ -62,11 +68,15 @@ function createThreadsProvider({
     },
     publishPost: (content, context) => postPublisher.publishPost(content, context),
     publishReply: (parentId, text) => adapter.reply(parentId, text),
+    getPostInsights: (postId, options) => insights.getPostInsights(postId, options),
+    getAccountInsights: options => insights.getAccountInsights(options),
+    listRecentPosts: options => insights.listRecentPosts(options),
     health() {
       return {
         platform: "threads",
         accountKey: account.key,
         configured: Boolean(account.userId && (account.accessToken || adapter.tokenManager?.getToken?.())),
+        insights: true,
       };
     },
   };
