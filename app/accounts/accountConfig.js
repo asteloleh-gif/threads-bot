@@ -4,6 +4,11 @@ function normalize(value) {
   return String(value || "").trim();
 }
 
+function bool(value, fallback = false) {
+  if (value == null || value === "") return fallback;
+  return String(value).trim().toLowerCase() === "true";
+}
+
 function normalizePlatform(value) {
   const platform = normalize(value).toLowerCase();
   if (!SUPPORTED_PLATFORMS.includes(platform)) {
@@ -31,6 +36,7 @@ function createAccountConfig(input = {}) {
     accessToken: normalize(input.accessToken) || null,
     verifyToken: normalize(input.verifyToken) || null,
     enabled: input.enabled !== false,
+    dryRun: input.dryRun !== false,
   });
 }
 
@@ -44,8 +50,44 @@ function loadPrimaryAccount(env = process.env) {
     username: env.THREADS_USERNAME || "leoakastel",
     accessToken: env.THREADS_ACCESS_TOKEN || env.THREDS_ACCESS_TOKEN,
     verifyToken: env.THREADS_VERIFY_TOKEN,
-    enabled: String(env.BOT_ENABLED || "false").toLowerCase() === "true",
+    enabled: bool(env.BOT_ENABLED, false),
+    dryRun: bool(env.BOT_DRY_RUN, true),
   });
+}
+
+function optionalPlatformAccount(env, platform) {
+  const prefix = platform.toUpperCase();
+  const hasAnyConfig = [
+    `${prefix}_USER_ID`,
+    `${prefix}_USERNAME`,
+    `${prefix}_ACCESS_TOKEN`,
+    `${prefix}_VERIFY_TOKEN`,
+  ].some(name => normalize(env[name]));
+  if (!hasAnyConfig) return null;
+
+  const fallbackBrand = env.SOCIAL_BRAND || env.THREADS_USERNAME || "leoakastel";
+  const username = env[`${prefix}_USERNAME`] || env[`${prefix}_PAGE_NAME`] || fallbackBrand;
+  return createAccountConfig({
+    key: env[`${prefix}_ACCOUNT_KEY`] || undefined,
+    brand: env[`${prefix}_BRAND`] || fallbackBrand,
+    platform,
+    language: env[`${prefix}_LANGUAGE`] || env.SOCIAL_LANGUAGE || "auto",
+    userId: env[`${prefix}_USER_ID`],
+    username,
+    accessToken: env[`${prefix}_ACCESS_TOKEN`],
+    verifyToken: env[`${prefix}_VERIFY_TOKEN`] || env.THREADS_VERIFY_TOKEN,
+    enabled: bool(env[`${prefix}_ENABLED`], false),
+    dryRun: bool(env[`${prefix}_DRY_RUN`], true),
+  });
+}
+
+function loadSocialAccounts(env = process.env) {
+  const accounts = [loadPrimaryAccount(env)];
+  for (const platform of ["instagram", "facebook"]) {
+    const account = optionalPlatformAccount(env, platform);
+    if (account) accounts.push(account);
+  }
+  return Object.freeze(accounts);
 }
 
 function publicAccountView(account) {
@@ -58,6 +100,7 @@ function publicAccountView(account) {
     userId: account.userId,
     username: account.username,
     enabled: account.enabled,
+    dryRun: account.dryRun,
   };
 }
 
@@ -65,5 +108,6 @@ module.exports = {
   SUPPORTED_PLATFORMS,
   createAccountConfig,
   loadPrimaryAccount,
+  loadSocialAccounts,
   publicAccountView,
 };
