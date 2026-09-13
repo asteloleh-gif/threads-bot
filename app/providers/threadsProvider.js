@@ -1,14 +1,23 @@
 const { createThreadsAdapter } = require("../../adapters/threadsAdapter");
+const { createThreadsPostPublisher } = require("../../adapters/threadsPostPublisher");
 const { SOCIAL_EVENT_TYPES, createSocialEvent } = require("../events/socialEvent");
 const { providerCapabilities } = require("./socialProvider");
 
-function createThreadsProvider({ account, adapterFactory = createThreadsAdapter } = {}) {
+function createThreadsProvider({
+  account,
+  adapterFactory = createThreadsAdapter,
+  postPublisherFactory = createThreadsPostPublisher,
+} = {}) {
   if (!account) throw new Error("Threads account config is required");
   if (account.platform !== "threads") throw new Error(`Threads provider cannot serve ${account.platform}`);
 
   const adapter = adapterFactory({
     accessToken: account.accessToken,
     userId: account.userId,
+  });
+  const postPublisher = postPublisherFactory({
+    tokenManager: adapter.tokenManager,
+    fallbackAccessToken: account.accessToken,
   });
 
   const provider = {
@@ -17,7 +26,7 @@ function createThreadsProvider({ account, adapterFactory = createThreadsAdapter 
     account,
     capabilities: providerCapabilities({
       webhooks: true,
-      publishPosts: false,
+      publishPosts: true,
       publishReplies: true,
       discovery: true,
       insights: false,
@@ -51,6 +60,7 @@ function createThreadsProvider({ account, adapterFactory = createThreadsAdapter 
         },
       });
     },
+    publishPost: (content, context) => postPublisher.publishPost(content, context),
     publishReply: (parentId, text) => adapter.reply(parentId, text),
     health() {
       return {
@@ -66,6 +76,7 @@ function createThreadsProvider({ account, adapterFactory = createThreadsAdapter 
   // normalized SocialEvent side channel above.
   return Object.assign(provider, adapter, {
     normalizeWebhookEvent: provider.normalizeWebhookEvent,
+    publishPost: provider.publishPost,
     reply: (parentId, text) => provider.publishReply(parentId, text),
   });
 }
