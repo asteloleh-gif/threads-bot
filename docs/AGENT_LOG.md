@@ -139,3 +139,30 @@ Never put access tokens, secrets, passwords, private connection strings, or othe
 - Deletion of `threads-bot-LdTD` and `verify-threads-bot` is staged but requires manual Railway 2FA Apply from the dashboard.
 - `npm audit` reported 2 moderate vulnerabilities; backlog, not a Block 4 blocker.
 - RU still supports the legacy typo `THREDS_ACCESS_TOKEN` intentionally for backward compatibility.
+
+---
+
+## 2026-09-13 — Block 4 — Analytics Engine
+
+**Status:** DONE
+
+**Done:**
+- Added read-only Threads account insights, post insights, and recent-post discovery behind the provider capability boundary.
+- Added normalized metrics, derived interactions/engagement rate, and per-entity snapshot deltas/rates.
+- Persisted account/post analytics snapshots and discovered posts in PostgreSQL using the existing durable layer.
+- Added a capability-driven analytics scheduler with account/post failure isolation and `/health` visibility.
+- Enabled production analytics on a 6-hour interval with 25-post/30-day bounds; Publish Engine remains disabled/dry-run and analytics performs no Meta mutations.
+- EN live gate passed: 1 account snapshot, 17 recent posts, 17 post snapshots, 0 failures.
+- RU live gate passed: 1 account snapshot, 14 recent posts, 14 post snapshots, 0 failures.
+- Instagram/Facebook insights remain capability-disabled until their real Meta assets/permissions/tokens are onboarded and verified.
+
+**Commits/PRs:** #39 (main), #40 (ru-bot)
+
+**Regression:** 129/129 tests pass
+
+**Changed files/services:** `adapters/threadsInsightsAdapter.js`, `app/analytics/*`, `app/providers/threadsProvider.js`, `server-meta.js`, `.env.example`, Block 4 docs/tests; EN/RU Railway analytics runtime variables.
+
+**Open questions / external verification:**
+- Instagram/Facebook Meta onboarding remains pending; their analytics capabilities must not be enabled until live permissions/assets are verified.
+- Deletion of obsolete EN Railway services `threads-bot-LdTD` and `verify-threads-bot` remains staged pending manual 2FA Apply.
+- `npm audit` still reports 2 moderate vulnerabilities in the dependency tree; backlog, not a Block 5 blocker.
