@@ -19,5 +19,11 @@ jobs:
         run: |
           test "$(node --version)" = "v24.20.0"
           test "$(npm --version)" = "11.19.0"
+      - name: Generate Block 3 lockfile
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - uses: actions/upload-artifact@v4
+        with:
+          name: block3-package-lock
+          path: package-lock.json
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm test
