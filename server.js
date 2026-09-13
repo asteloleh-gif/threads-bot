@@ -5,7 +5,7 @@
 const express = require("express");
 const bodyParser = require("body-parser");
 const fetch = require("node-fetch");
-const { createThreadsAdapter } = require("./adapters/threadsAdapter");
+const { createApplicationContext } = require("./app/composition/createApplicationContext");
 const { createThreadsDiscoveryAdapter } = require("./adapters/threadsDiscoveryAdapter");
 const { loadProactiveConfig, loadMonitors } = require("./config/proactive");
 const { createCandidateRepository } = require("./proactive/candidateRepository");
@@ -41,9 +41,10 @@ const {
 
 const policy = loadPolicy();
 const AIRTABLE_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}`;
+const socialContext = createApplicationContext({ env: process.env });
 const safety = createSafetyPipeline({ threadsUserId: THREADS_USER_ID, selfUsername: THREADS_USERNAME, botEnabled: BOT_ENABLED, botDryRun: BOT_DRY_RUN, redisUrl: REDIS_URL, policy });
 const humanLocks = createHumanLockStore({ redisUrl: REDIS_URL, ttlSeconds: policy.conversationResetHours * 60 * 60 });
-const threads = createThreadsAdapter({ accessToken: THREADS_ACCESS_TOKEN, userId: THREADS_USER_ID });
+const threads = socialContext.primaryProvider;
 const threadsDiscovery = createThreadsDiscoveryAdapter({ tokenManager: threads.tokenManager });
 const proactiveConfig = loadProactiveConfig();
 const proactiveMonitors = loadMonitors(process.env, proactiveConfig);
@@ -66,6 +67,7 @@ app.get("/health", async (_q, r) => {
   r.status(ok ? 200 : 503).json({ ok, version: "v9.2.0", enabled: safety.isEnabled(), dryRun: safety.isDryRun(), redis, humanLock, ambiguousPending, policy, limits: safety.limits,
     memory: { maxMessages: Number(MAX_MEMORY_MESSAGES), maxTokens: Number(MAX_MEMORY_TOKENS) },
     vision: { enabled: vision.isEnabled(), detail: vision.detail, maxImages: 1, moderation: "omni-moderation-latest", failClosedOnImageError: true },
+    social: socialContext.health(),
     proactive: { enabled: proactiveConfig.enabled, mode: proactiveConfig.mode, account: proactiveConfig.account || null, monitors: proactiveMonitors.length, dailyDraftLimit: proactiveConfig.dailyDraftLimit, dailyAiTokenLimit: proactiveConfig.dailyAiTokenLimit } });
 });
 
@@ -311,4 +313,4 @@ async function start() {
   console.log("Proactive copilot startup", JSON.stringify(proactiveStart));
 }
 if (require.main === module) start().catch(e => { console.error("Fatal startup error:", e?.message || String(e)); process.exit(1); });
-module.exports = { app, handleComment, safety, humanLocks, threads, threadsDiscovery, proactiveRunner, policy, vision, mediaReader, getContext, generateReply, start, resolveParentForRouting };
+module.exports = { app, handleComment, safety, humanLocks, threads, threadsDiscovery, proactiveRunner, policy, vision, mediaReader, getContext, generateReply, start, resolveParentForRouting, socialContext };
