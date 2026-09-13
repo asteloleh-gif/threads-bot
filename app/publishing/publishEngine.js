@@ -50,6 +50,7 @@ function createPublishEngine({
   }
 
   async function processJob(id) {
+    if (!enabled) return { id, status: "skipped", reason: "PUBLISH_ENGINE_DISABLED" };
     const claimToken = crypto.randomUUID();
     const claimed = await repository.claim(id, claimToken, { now: now(), leaseMs });
     if (!claimed) return { id, status: "skipped", reason: "CLAIM_REJECTED" };
@@ -78,7 +79,7 @@ function createPublishEngine({
       return { id, status: "failed", reason: "PROVIDER_NOT_CONFIGURED" };
     }
 
-    if (dryRun) {
+    if (dryRun || provider.account?.dryRun === true) {
       const result = { wouldPublish: true, platform: provider.platform, contentType: job.content?.type || null };
       const committed = await repository.finish(id, claimToken, PUBLISH_STATUS.SIMULATED, { result, now: now() });
       return committed

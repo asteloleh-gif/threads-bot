@@ -172,3 +172,15 @@ test("disabled publish scheduler performs no queue work", async () => {
   assert.equal(dueCalls, 0);
   assert.equal(engine.health().enabled, false);
 });
+
+test('account dry-run overrides a live publish engine', async () => {
+  const job=createPublishJob({id:'account-dry-run',accountKey:'leo:threads',content:{type:'text',text:'test'}});
+  const provider=publishProvider({publishPost:async()=>assert.fail('must not publish')});
+  provider.account.dryRun=true;
+  const engine=createPublishEngine({providerRegistry:fakeRegistry(provider),repository:fakeRepository(job),enabled:true,dryRun:false});
+  assert.equal((await engine.processJob(job.id)).status,'simulated');
+});
+test('direct job processing cannot bypass a disabled publish engine', async () => {
+  const engine=createPublishEngine({providerRegistry:fakeRegistry(publishProvider()),repository:{claim:async()=>assert.fail('must not claim')},enabled:false,dryRun:false});
+  assert.equal((await engine.processJob('j')).reason,'PUBLISH_ENGINE_DISABLED');
+});
