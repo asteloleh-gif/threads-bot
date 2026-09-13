@@ -6,16 +6,11 @@ on:
   pull_request:
     branches: ["main"]
 
-permissions:
-  contents: write
-
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: block3-postgres-data-layer
       - uses: actions/setup-node@v4
         with:
           node-version: 24.20.0
@@ -24,16 +19,5 @@ jobs:
         run: |
           test "$(node --version)" = "v24.20.0"
           test "$(npm --version)" = "11.19.0"
-      - name: Generate Block 3 lockfile
-        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-      - name: Commit generated lockfile
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package-lock.json
-          if ! git diff --cached --quiet; then
-            git commit -m "Block 3: lock pg dependency"
-            git push origin HEAD:block3-postgres-data-layer
-          fi
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm test
