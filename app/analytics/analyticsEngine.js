@@ -61,7 +61,7 @@ function createAnalyticsEngine({
 
     let postsResult;
     try {
-      const since = new Date(Date.now() - Math.max(1, lookbackDays) * 86_400_000).toISOString();
+      const since = Math.floor((Date.now() - Math.max(1, lookbackDays) * 86_400_000) / 1000);
       postsResult = await provider.listRecentPosts({ limit: maxPostsPerAccount, since });
     } catch (error) {
       summary.failures.push({ scope: "posts", reason: "DISCOVERY_EXCEPTION", error: error?.message || String(error) });
