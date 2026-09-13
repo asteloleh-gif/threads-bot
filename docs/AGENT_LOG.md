@@ -6,6 +6,8 @@ Shared handoff log for ChatGPT, Claude, and future maintainers working on Astel 
 
 After every closed implementation block or merged PR, append a new entry to the end of this file. Do not rewrite older entries except to correct a factual error.
 
+A task is not considered fully closed until both the technical work/verification and the corresponding `AGENT_LOG.md` entry are complete. "Implemented" or "deployed" without a handoff entry is still an incomplete process state.
+
 Use this format:
 
 ```md
@@ -254,7 +256,7 @@ Never put access tokens, secrets, passwords, private connection strings, or othe
 - Control startup requires the gated content runtime to already be ready; arbitrary internal errors are not exposed to callers.
 - PR #44 passed CI and was merged to `main`; EN Railway deployment and `/health` gate passed.
 - Ported the final tested tree to `ru-bot` without merging divergent histories; RU deployment is verified separately as part of Block 5D closure.
-- Preserved safety posture: private Content Control API off by default, Content Pipeline off by default, Publish Engine disabled and dry-run, live scheduling blocked, no Meta mutation enabled.
+- Preserved safety posture: private Content Control API off by default, Content Pipeline off by default, Publish Engine disabled and dry-run, live scheduling blocked, and no new Content Pipeline / Publish Engine Meta mutation was enabled.
 
 **Commits/PRs:** #44 (main); exact tested tree ported to `ru-bot`
 
@@ -318,3 +320,25 @@ Never put access tokens, secrets, passwords, private connection strings, or othe
 
 **Open questions / external verification:**
 - None blocking Block 6B. Keep `HYPER_CREW_ENABLED=false` and all content/control/publish mutation gates unchanged until separately approved.
+
+---
+
+## 2026-09-13 — Developer Tooling — Codebase Memory MCP
+
+**Status:** DONE
+
+**Done:**
+- Added repository-owned bootstrap scripts for Codebase Memory MCP on Windows and macOS/Linux.
+- Pinned the reviewed upstream installer source and kept the integration developer-only; it does not run inside the Astel Social Engine production service.
+- Added automatic repository indexing/watch configuration and documented Claude Code / Codex CLI integration and local verification steps.
+- Confirmed PR #45 was merged but had not been represented in this handoff log; this entry repairs that synchronization gap.
+- Strengthened the logging rule above so implementation/deployment alone is not considered a complete handoff state.
+
+**Commits/PRs:** #45 (main); tooling files are present in the exact shared EN/RU tree
+
+**Regression:** Developer-only tooling change; no runtime behavior change. Current shared application tree passes 178/178 tests.
+
+**Changed files/services:** `tools/setup-codebase-memory.ps1`, `tools/setup-codebase-memory.sh`, `docs/CODEBASE_MEMORY.md`, `docs/AGENT_LOG.md`; no production service or Meta configuration change.
+
+**Open questions / external verification:**
+- Local workstation installation and `/mcp` verification in Codex/Claude remain pending until a developer machine is available.
