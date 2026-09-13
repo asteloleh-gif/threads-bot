@@ -26,6 +26,23 @@ function createContentControlRouter({ control } = {}) {
     return res.status(result.httpStatus).json(result.body);
   }
 
+  async function read(res, resource, input) {
+    const result = await control.read({ resource, input });
+    return res.status(result.httpStatus).json(result.body);
+  }
+
+  router.get("/briefs/:briefId", async (req, res) => {
+    return read(res, "brief", { briefId: req.params.briefId });
+  });
+
+  router.get("/drafts/:draftId", async (req, res) => {
+    return read(res, "draft", { draftId: req.params.draftId });
+  });
+
+  router.get("/drafts/:draftId/workflow", async (req, res) => {
+    return read(res, "workflow", { draftId: req.params.draftId });
+  });
+
   router.post("/briefs/generate", async (req, res) => {
     return execute(req, res, "generateBrief", {
       accountKey: req.body?.accountKey,
@@ -68,6 +85,22 @@ function createContentControlRouter({ control } = {}) {
   router.post("/drafts/:draftId/schedule", async (req, res) => {
     return execute(req, res, "scheduleApprovedDraft", {
       draftId: req.params.draftId,
+      scheduledAt: req.body?.scheduledAt,
+      metadata: req.body?.metadata,
+    });
+  });
+
+  router.post("/dry-runs", async (req, res) => {
+    return execute(req, res, "runEndToEndDryRun", {
+      accountKey: req.body?.accountKey,
+      objective: req.body?.objective,
+      research: req.body?.research,
+      analytics: req.body?.analytics,
+      brand: req.body?.brand,
+      language: req.body?.language,
+      constraints: req.body?.constraints,
+      policy: req.body?.policy,
+      humanApproval: req.body?.humanApproval,
       scheduledAt: req.body?.scheduledAt,
       metadata: req.body?.metadata,
     });
