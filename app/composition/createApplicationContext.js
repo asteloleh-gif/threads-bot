@@ -2,6 +2,7 @@ const { loadPrimaryAccount, publicAccountView } = require("../accounts/accountCo
 const { createProviderRegistry } = require("../providers/providerRegistry");
 const { createThreadsProvider } = require("../providers/threadsProvider");
 const { createInstagramProvider } = require("../providers/instagramProvider");
+const { createFacebookProvider } = require("../providers/facebookProvider");
 
 function createApplicationContext({ env = process.env, providerFactories = {} } = {}) {
   const primaryAccount = loadPrimaryAccount(env);
@@ -10,6 +11,7 @@ function createApplicationContext({ env = process.env, providerFactories = {} } 
   const factories = {
     threads: providerFactories.threads || createThreadsProvider,
     instagram: providerFactories.instagram || createInstagramProvider,
+    facebook: providerFactories.facebook || createFacebookProvider,
   };
 
   const factory = factories[primaryAccount.platform];
