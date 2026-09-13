@@ -1,10 +1,11 @@
 {
   "name": "threads-auto-reply-bot",
   "version": "1.2.0",
-  "description": "Astel Reply Engine for Threads with router and Redis safety",
+  "description": "Astel Social Engine for Threads, Instagram and Facebook with Redis safety",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node server-meta.js",
+    "start:legacy": "node server.js",
     "test": "node --test tests/*.test.js"
   },
   "engines": {

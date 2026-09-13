@@ -1,11 +1,12 @@
-const { loadPrimaryAccount, publicAccountView } = require("../accounts/accountConfig");
+const { loadSocialAccounts, publicAccountView } = require("../accounts/accountConfig");
 const { createProviderRegistry } = require("../providers/providerRegistry");
 const { createThreadsProvider } = require("../providers/threadsProvider");
 const { createInstagramProvider } = require("../providers/instagramProvider");
 const { createFacebookProvider } = require("../providers/facebookProvider");
 
 function createApplicationContext({ env = process.env, providerFactories = {} } = {}) {
-  const primaryAccount = loadPrimaryAccount(env);
+  const accounts = loadSocialAccounts(env);
+  const primaryAccount = accounts[0];
   const registry = createProviderRegistry();
 
   const factories = {
@@ -14,20 +15,26 @@ function createApplicationContext({ env = process.env, providerFactories = {} } 
     facebook: providerFactories.facebook || createFacebookProvider,
   };
 
-  const factory = factories[primaryAccount.platform];
-  if (!factory) throw new Error(`No provider factory for ${primaryAccount.platform}`);
+  let primaryProvider = null;
+  for (const account of accounts) {
+    const factory = factories[account.platform];
+    if (!factory) throw new Error(`No provider factory for ${account.platform}`);
+    const provider = registry.register(factory({ account }));
+    if (account.key === primaryAccount.key) primaryProvider = provider;
+  }
 
-  const primaryProvider = registry.register(factory({ account: primaryAccount }));
+  if (!primaryProvider) throw new Error(`Primary provider missing for ${primaryAccount.key}`);
 
   function health() {
     return {
       primaryAccount: publicAccountView(primaryAccount),
+      accounts: accounts.map(publicAccountView),
       providers: registry.list().map(provider => provider.health()),
     };
   }
 
   return {
-    accounts: Object.freeze([primaryAccount]),
+    accounts,
     primaryAccount,
     primaryProvider,
     providers: registry,

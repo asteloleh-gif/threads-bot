@@ -1,5 +1,6 @@
 const { createFacebookAdapter } = require("../../adapters/facebookAdapter");
 const { providerCapabilities } = require("./socialProvider");
+const { createCommentCompatibility } = require("./commentCompatibility");
 
 function createFacebookProvider({
   account,
@@ -19,6 +20,7 @@ function createFacebookProvider({
     baseUrl,
     fetchImpl,
   });
+  const compatibility = createCommentCompatibility({ adapter, account, platform: "facebook" });
 
   const provider = {
     platform: "facebook",
@@ -42,12 +44,14 @@ function createFacebookProvider({
         platform: "facebook",
         accountKey: account.key,
         configured: Boolean(account.userId && account.accessToken),
+        enabled: account.enabled,
+        dryRun: account.dryRun,
         apiVersion: adapter.config?.apiVersion || null,
       };
     },
   };
 
-  return Object.assign(provider, adapter, {
+  return Object.assign(provider, compatibility, adapter, {
     reply: (parentId, text) => provider.publishReply(parentId, text),
   });
 }
