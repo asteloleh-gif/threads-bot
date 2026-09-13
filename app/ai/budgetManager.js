@@ -2,10 +2,16 @@ function estimateTokens(value) {
   return Math.max(1, Math.ceil(String(value || "").length / 4));
 }
 
+function validRate(value) {
+  if (value == null || value === "") return null;
+  const rate = Number(value);
+  return Number.isFinite(rate) && rate >= 0 ? rate : null;
+}
+
 function estimateCostMicrousd({ inputTokens, outputTokens, inputUsdPer1M, outputUsdPer1M } = {}) {
-  const inputRate = Number(inputUsdPer1M);
-  const outputRate = Number(outputUsdPer1M);
-  if (!Number.isFinite(inputRate) || inputRate < 0 || !Number.isFinite(outputRate) || outputRate < 0) return null;
+  const inputRate = validRate(inputUsdPer1M);
+  const outputRate = validRate(outputUsdPer1M);
+  if (inputRate == null || outputRate == null) return null;
   return Math.ceil(Number(inputTokens || 0) * inputRate + Number(outputTokens || 0) * outputRate);
 }
 
@@ -30,13 +36,6 @@ function createBudgetManager({
     if (inputTokens > maxInputTokensPerCall) return { allowed: false, reason: "INPUT_TOKEN_LIMIT", inputTokens };
     if (outputTokens > maxOutputTokensPerCall) return { allowed: false, reason: "OUTPUT_TOKEN_LIMIT", inputTokens, maxOutputTokens: outputTokens };
 
-    const totalTokens = inputTokens + outputTokens;
-    const tokenKind = `ai:${normalizedAccountKey}:tokens`;
-    const tokenReservation = await quotaStore.takeQuota(tokenKind, totalTokens, dailyTokenLimit, { scope: "day" });
-    if (Number(tokenReservation?.granted || 0) !== totalTokens) {
-      return { allowed: false, reason: tokenReservation?.reason || "DAILY_TOKEN_BUDGET", inputTokens, maxOutputTokens: outputTokens };
-    }
-
     const estimatedMicrousd = estimateCostMicrousd({
       inputTokens,
       outputTokens,
@@ -45,6 +44,13 @@ function createBudgetManager({
     });
     if (estimatedMicrousd == null) {
       return { allowed: false, reason: "PRICING_NOT_CONFIGURED", inputTokens, maxOutputTokens: outputTokens };
+    }
+
+    const totalTokens = inputTokens + outputTokens;
+    const tokenKind = `ai:${normalizedAccountKey}:tokens`;
+    const tokenReservation = await quotaStore.takeQuota(tokenKind, totalTokens, dailyTokenLimit, { scope: "day" });
+    if (Number(tokenReservation?.granted || 0) !== totalTokens) {
+      return { allowed: false, reason: tokenReservation?.reason || "DAILY_TOKEN_BUDGET", inputTokens, maxOutputTokens: outputTokens };
     }
 
     const costKind = `ai:${normalizedAccountKey}:cost-microusd`;
