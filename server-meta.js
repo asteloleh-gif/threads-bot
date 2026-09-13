@@ -18,6 +18,8 @@ const { createDurablePublishRepository } = require("./app/publishing/durablePubl
 const { createPublishEngine } = require("./app/publishing/publishEngine");
 const { createPostgresStore } = require("./app/db/postgresStore");
 const { createDurableRepository } = require("./app/db/durableRepository");
+const { createAnalyticsRepository } = require("./app/analytics/analyticsRepository");
+const { createAnalyticsEngine } = require("./app/analytics/analyticsEngine");
 const { loadProactiveConfig } = require("./config/proactive");
 
 const app = express();
@@ -35,6 +37,10 @@ const {
   PUBLISH_POLL_INTERVAL_MS = "5000",
   PUBLISH_BATCH_SIZE = "5",
   PUBLISH_LEASE_MS = "60000",
+  ANALYTICS_ENGINE_ENABLED = "false",
+  ANALYTICS_INTERVAL_MS = "21600000",
+  ANALYTICS_MAX_POSTS_PER_ACCOUNT = "25",
+  ANALYTICS_LOOKBACK_DAYS = "30",
 } = process.env;
 
 function bool(value, fallback = false) {
@@ -47,6 +53,7 @@ const proactiveConfig = loadProactiveConfig();
 const secondaryCommunity = new Map();
 const postgresStore = createPostgresStore();
 const durable = createDurableRepository({ store: postgresStore });
+const analyticsRepository = createAnalyticsRepository({ store: postgresStore, durable });
 let lastDurableProjectionError = null;
 
 async function persistDurable(label, fn) {
@@ -86,6 +93,14 @@ const publishEngine = createPublishEngine({
   pollIntervalMs: Number(PUBLISH_POLL_INTERVAL_MS),
   batchSize: Number(PUBLISH_BATCH_SIZE),
   leaseMs: Number(PUBLISH_LEASE_MS),
+});
+const analyticsEngine = createAnalyticsEngine({
+  providerRegistry: legacy.socialContext.providers,
+  repository: analyticsRepository,
+  enabled: bool(ANALYTICS_ENGINE_ENABLED, false),
+  intervalMs: Number(ANALYTICS_INTERVAL_MS),
+  maxPostsPerAccount: Number(ANALYTICS_MAX_POSTS_PER_ACCOUNT),
+  lookbackDays: Number(ANALYTICS_LOOKBACK_DAYS),
 });
 
 async function handleThreadsWebhook({ native, event }) {
@@ -160,6 +175,7 @@ app.get("/health", async (_req, res) => {
   );
   const publishing = publishEngine.health();
   const publishingOk = !publishing.enabled || publishing.repository?.connected;
+  const analytics = analyticsEngine.health();
   const databaseOk = !database.required || database.connected;
   const ok = (!legacy.policy.redisRequired || redis.connected) && humanLock.connected && secondaryOk && publishingOk && databaseOk;
 
@@ -196,6 +212,7 @@ app.get("/health", async (_req, res) => {
       secondary,
     },
     publishing,
+    analytics,
     proactive: {
       enabled: proactiveConfig.enabled,
       mode: proactiveConfig.mode,
@@ -232,11 +249,13 @@ async function start() {
   for (const runtime of secondaryCommunity.values()) await runtime.init();
 
   const publishStart = await publishEngine.start();
+  const analyticsStart = await analyticsEngine.start();
   console.log("Publish engine startup", JSON.stringify(publishStart));
+  console.log("Analytics engine startup", JSON.stringify(analyticsStart));
   console.log("Durable database startup", JSON.stringify(databaseStart));
 
   app.listen(PORT, () => {
-    console.log(`Astel Social Engine listening on port ${PORT}; model=${OPENAI_MODEL}; providers=${legacy.socialContext.providers.list().length}; threadsEnabled=${legacy.safety.isEnabled()}; threadsDryRun=${legacy.safety.isDryRun()}; secondary=${secondaryCommunity.size}; publishEnabled=${publishEngine.health().enabled}; publishDryRun=${publishEngine.health().dryRun}; databaseConnected=${postgresStore.isReady()}`);
+    console.log(`Astel Social Engine listening on port ${PORT}; model=${OPENAI_MODEL}; providers=${legacy.socialContext.providers.list().length}; threadsEnabled=${legacy.safety.isEnabled()}; threadsDryRun=${legacy.safety.isDryRun()}; secondary=${secondaryCommunity.size}; publishEnabled=${publishEngine.health().enabled}; publishDryRun=${publishEngine.health().dryRun}; analyticsEnabled=${analyticsEngine.health().enabled}; databaseConnected=${postgresStore.isReady()}`);
   });
 
   if (PROACTIVE_PERMISSION_PROBE === "true") {
@@ -268,6 +287,8 @@ module.exports = {
   secondaryCommunity,
   postgresStore,
   durable,
+  analyticsRepository,
+  analyticsEngine,
   hotPublishRepository,
   publishRepository,
   publishEngine,
