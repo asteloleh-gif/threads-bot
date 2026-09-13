@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Canonical Astel Social Engine service hardening policy for Railway app services.",
+  "service": {
+    "preDeployCommand": ["npm test"],
+    "healthcheckPath": "/health",
+    "healthcheckTimeoutSeconds": 30,
+    "restartPolicy": {
+      "type": "ON_FAILURE",
+      "maxRetries": 3
+    }
+  },
+  "requiredRuntimeDefaults": {
+    "DATABASE_REQUIRED": "true",
+    "REDIS_REQUIRED": "true",
+    "PUBLISH_ENGINE_ENABLED": "false",
+    "PUBLISH_ENGINE_DRY_RUN": "true"
+  },
+  "safetyRules": [
+    "A newly created Railway app service is not production-ready until this policy has been applied and verified.",
+    "Never disable the /health gate for production app services.",
+    "Never use an unlimited restart policy for fail-closed dependency startup failures.",
+    "Do not enable publishing while cloning or migrating a service; start disabled and dry-run first."
+  ]
+}
