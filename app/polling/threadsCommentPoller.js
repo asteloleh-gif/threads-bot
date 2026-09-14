@@ -1,4 +1,5 @@
 const { createThreadsPollingStore } = require("./threadsPollingStore");
+const { createThreadsPollingReader } = require("./threadsPollingReader");
 
 const TRANSIENT_REASONS = new Set([
   "BOT_DISABLED",
@@ -21,6 +22,7 @@ function createThreadsCommentPoller({
   postsLimit = 10,
   repliesLimit = 50,
   store,
+  reader,
   logger = console,
 } = {}) {
   if (!provider || provider.platform !== "threads") throw new Error("Threads comment poller requires a Threads provider");
@@ -28,6 +30,10 @@ function createThreadsCommentPoller({
 
   const accountKey = provider.accountKey;
   const pollStore = store || createThreadsPollingStore({ redisUrl });
+  const pollReader = reader || createThreadsPollingReader({
+    tokenManager: provider.tokenManager,
+    fallbackAccessToken: provider.account?.accessToken,
+  });
   const pollEveryMs = clamp(intervalMs, 15000, 3600000, 60000);
   const recentPostsLimit = clamp(postsLimit, 1, 25, 10);
   const perPostRepliesLimit = clamp(repliesLimit, 1, 100, 50);
@@ -59,7 +65,7 @@ function createThreadsCommentPoller({
   }
 
   async function readConversation(postId) {
-    return provider.listConversation(postId, { limit: perPostRepliesLimit, reverse: false });
+    return pollReader.listConversation(postId, { limit: perPostRepliesLimit, reverse: false });
   }
 
   async function prime(posts) {
