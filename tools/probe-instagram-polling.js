@@ -9,29 +9,54 @@ async function requestJson(url) {
   return { response, body };
 }
 
-async function main() {
-  const userId = String(process.env.INSTAGRAM_USER_ID || '').trim();
-  const token = String(process.env.INSTAGRAM_ACCESS_TOKEN || '').trim();
-  if (!userId || !token) throw new Error('IG_CONFIG_MISSING');
+function safeError(body) {
+  return body?.error ? { code: body.error.code, type: body.error.type } : null;
+}
 
-  const mediaUrl = `https://graph.instagram.com/v26.0/${encodeURIComponent(userId)}/media?fields=id,timestamp,media_product_type&limit=3`;
-  const media = await requestJson(mediaUrl);
-  console.log('IG polling probe media', {
-    status: media.response.status,
-    count: Array.isArray(media.body?.data) ? media.body.data.length : 0,
-    error: media.body?.error ? { code: media.body.error.code, type: media.body.error.type } : null,
+async function mediaProbe(label, path) {
+  const url = `https://graph.instagram.com/v26.0/${path}/media?fields=id,timestamp,media_product_type,comments_count&limit=5`;
+  const result = await requestJson(url);
+  console.log(`IG polling probe ${label}`, {
+    status: result.response.status,
+    count: Array.isArray(result.body?.data) ? result.body.data.length : 0,
+    commentsCounts: Array.isArray(result.body?.data) ? result.body.data.map(item => Number(item.comments_count) || 0) : [],
+    error: safeError(result.body),
   });
-  if (!media.response.ok) process.exit(1);
+  return result;
+}
 
-  const first = Array.isArray(media.body?.data) ? media.body.data[0] : null;
-  if (!first?.id) return;
+async function main() {
+  const configuredUserId = String(process.env.INSTAGRAM_USER_ID || '').trim();
+  const token = String(process.env.INSTAGRAM_ACCESS_TOKEN || '').trim();
+  if (!configuredUserId || !token) throw new Error('IG_CONFIG_MISSING');
 
-  const commentsUrl = `https://graph.instagram.com/v26.0/${encodeURIComponent(first.id)}/comments?fields=id,text,username,from,parent_id,timestamp&limit=10`;
+  const me = await requestJson('https://graph.instagram.com/v26.0/me?fields=id,user_id,username');
+  console.log('IG polling probe identity', {
+    status: me.response.status,
+    id: me.body?.id || null,
+    user_id: me.body?.user_id || null,
+    username: me.body?.username || null,
+    configuredMatchesUserId: String(me.body?.user_id || '') === configuredUserId,
+    error: safeError(me.body),
+  });
+  if (!me.response.ok) process.exit(1);
+
+  const explicit = await mediaProbe('media-explicit-user-id', encodeURIComponent(configuredUserId));
+  const meMedia = await mediaProbe('media-me', 'me');
+  const appScoped = me.body?.id ? await mediaProbe('media-app-scoped-id', encodeURIComponent(me.body.id)) : null;
+
+  const candidates = [explicit, meMedia, appScoped].filter(Boolean);
+  const mediaResult = candidates.find(item => item.response.ok && Array.isArray(item.body?.data) && item.body.data.length > 0);
+  if (!mediaResult) return;
+
+  const first = mediaResult.body.data[0];
+  const commentsUrl = `https://graph.instagram.com/v26.0/${encodeURIComponent(first.id)}/comments?fields=id,text,username,from,parent_id,timestamp,replies{id,text,username,from,parent_id,timestamp}&limit=10`;
   const comments = await requestJson(commentsUrl);
   console.log('IG polling probe comments', {
     status: comments.response.status,
     count: Array.isArray(comments.body?.data) ? comments.body.data.length : 0,
-    error: comments.body?.error ? { code: comments.body.error.code, type: comments.body.error.type } : null,
+    replyCounts: Array.isArray(comments.body?.data) ? comments.body.data.map(item => Array.isArray(item?.replies?.data) ? item.replies.data.length : 0) : [],
+    error: safeError(comments.body),
   });
   if (!comments.response.ok) process.exit(1);
 }
