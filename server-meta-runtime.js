@@ -1,6 +1,7 @@
 const base = require("./server-meta");
 const legacy = require("./server");
 const { createInstagramCommentPoller } = require("./app/polling/instagramCommentPoller");
+const { createThreadsCommentPoller } = require("./app/polling/threadsCommentPoller");
 const { createPublicLegalRouter } = require("./app/legal/publicLegalRoutes");
 
 function bool(value, fallback = false) {
@@ -15,6 +16,10 @@ const {
   INSTAGRAM_POLLING_MEDIA_LIMIT = "10",
   INSTAGRAM_POLLING_COMMENTS_LIMIT = "50",
   INSTAGRAM_POLLING_FULL_SCAN_EVERY = "10",
+  THREADS_POLLING_ENABLED = "false",
+  THREADS_POLLING_INTERVAL_MS = "60000",
+  THREADS_POLLING_POSTS_LIMIT = "10",
+  THREADS_POLLING_REPLIES_LIMIT = "50",
 } = process.env;
 
 base.app.use(createPublicLegalRouter());
@@ -32,8 +37,26 @@ const instagramPollers = legacy.socialContext.providers.list()
     fullScanEvery: Number(INSTAGRAM_POLLING_FULL_SCAN_EVERY),
   }));
 
+const threadsPollers = legacy.socialContext.providers.list()
+  .filter(provider => provider.platform === "threads")
+  .map(provider => createThreadsCommentPoller({
+    provider,
+    handler: base.handleThreadsWebhook,
+    redisUrl: REDIS_URL,
+    enabled: bool(THREADS_POLLING_ENABLED, false),
+    intervalMs: Number(THREADS_POLLING_INTERVAL_MS),
+    postsLimit: Number(THREADS_POLLING_POSTS_LIMIT),
+    repliesLimit: Number(THREADS_POLLING_REPLIES_LIMIT),
+  }));
+
 base.app.get("/health/instagram-polling", (_req, res) => {
   const polling = instagramPollers.map(poller => poller.health());
+  const ok = polling.every(item => !item.enabled || item.store?.connected);
+  res.status(ok ? 200 : 503).json({ ok, polling });
+});
+
+base.app.get("/health/threads-polling", (_req, res) => {
+  const polling = threadsPollers.map(poller => poller.health());
   const ok = polling.every(item => !item.enabled || item.store?.connected);
   res.status(ok ? 200 : 503).json({ ok, polling });
 });
@@ -41,11 +64,13 @@ base.app.get("/health/instagram-polling", (_req, res) => {
 async function start() {
   await base.start();
 
-  const pollingStart = [];
-  for (const poller of instagramPollers) {
-    pollingStart.push(await poller.init());
-  }
-  console.log("Instagram polling startup", JSON.stringify(pollingStart));
+  const instagramPollingStart = [];
+  for (const poller of instagramPollers) instagramPollingStart.push(await poller.init());
+  console.log("Instagram polling startup", JSON.stringify(instagramPollingStart));
+
+  const threadsPollingStart = [];
+  for (const poller of threadsPollers) threadsPollingStart.push(await poller.init());
+  console.log("Threads polling startup", JSON.stringify(threadsPollingStart));
 }
 
 if (require.main === module) {
@@ -59,4 +84,5 @@ module.exports = {
   ...base,
   start,
   instagramPollers,
+  threadsPollers,
 };
