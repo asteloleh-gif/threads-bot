@@ -14,6 +14,7 @@ const { createMetaWebhookRouter } = require("./app/webhooks/metaWebhookRouter");
 const { createMetaWebhookSignature, captureMetaRawBody } = require("./app/webhooks/metaWebhookSignature");
 const { createCommunityRuntime } = require("./app/community/createCommunityRuntime");
 const { createPlatformReplyGenerator } = require("./app/community/createPlatformReplyGenerator");
+const { createInstagramCommentPoller } = require("./app/polling/instagramCommentPoller");
 const { createPublishRepository } = require("./app/publishing/publishRepository");
 const { createDurablePublishRepository } = require("./app/publishing/durablePublishRepository");
 const { createPublishEngine } = require("./app/publishing/publishEngine");
@@ -38,6 +39,10 @@ const {
   MAX_MEMORY_TOKENS = "1000",
   PROACTIVE_PERMISSION_PROBE = "false",
   OPENAI_MODEL = "gpt-5.6-luna",
+  INSTAGRAM_POLLING_ENABLED = "false",
+  INSTAGRAM_POLLING_INTERVAL_MS = "60000",
+  INSTAGRAM_POLLING_MEDIA_LIMIT = "10",
+  INSTAGRAM_POLLING_COMMENTS_LIMIT = "50",
   PUBLISH_ENGINE_ENABLED = "false",
   PUBLISH_ENGINE_DRY_RUN = "true",
   PUBLISH_POLL_INTERVAL_MS = "5000",
@@ -197,6 +202,18 @@ async function handleSecondaryWebhook({ platform, provider, event }) {
   return result;
 }
 
+const instagramPollers = legacy.socialContext.providers.list()
+  .filter(provider => provider.platform === "instagram")
+  .map(provider => createInstagramCommentPoller({
+    provider,
+    handler: handleSecondaryWebhook,
+    redisUrl: REDIS_URL,
+    enabled: bool(INSTAGRAM_POLLING_ENABLED, false),
+    intervalMs: Number(INSTAGRAM_POLLING_INTERVAL_MS),
+    mediaLimit: Number(INSTAGRAM_POLLING_MEDIA_LIMIT),
+    commentsLimit: Number(INSTAGRAM_POLLING_COMMENTS_LIMIT),
+  }));
+
 const metaWebhookRouter = createMetaWebhookRouter({
   providerRegistry: legacy.socialContext.providers,
   handlers: {
@@ -223,6 +240,10 @@ app.get("/health", async (_req, res) => {
   const secondaryOk = secondary.every(item =>
     !item.enabled || (item.redis?.connected && item.humanLock?.connected)
   );
+  const instagramPolling = instagramPollers.map(poller => poller.health());
+  const instagramPollingOk = instagramPolling.every(item =>
+    !item.enabled || item.store?.connected
+  );
   const publishing = publishEngine.health();
   const publishingOk = !publishing.enabled || publishing.repository?.connected;
   const analytics = analyticsEngine.health();
@@ -233,7 +254,7 @@ app.get("/health", async (_req, res) => {
   const control = contentControl.health();
   const controlOk = !control.enabled || control.ready;
   const databaseOk = !database.required || database.connected;
-  const ok = (!legacy.policy.redisRequired || redis.connected) && humanLock.connected && secondaryOk && publishingOk && contentOk && crewOk && controlOk && databaseOk;
+  const ok = (!legacy.policy.redisRequired || redis.connected) && humanLock.connected && secondaryOk && instagramPollingOk && publishingOk && contentOk && crewOk && controlOk && databaseOk;
 
   res.status(ok ? 200 : 503).json({
     ok,
@@ -267,6 +288,7 @@ app.get("/health", async (_req, res) => {
       },
       secondary,
     },
+    instagramPolling,
     publishing,
     analytics,
     content,
@@ -308,11 +330,14 @@ async function start() {
   await legacy.humanLocks.init();
   for (const runtime of secondaryCommunity.values()) await runtime.init();
 
+  const instagramPollingStart = [];
+  for (const poller of instagramPollers) instagramPollingStart.push(await poller.init());
   const contentStart = await contentRuntime.init();
   const crewStart = await hyperCrew.init();
   const controlStart = await contentControl.init();
   const publishStart = await publishEngine.start();
   const analyticsStart = await analyticsEngine.start();
+  console.log("Instagram polling startup", JSON.stringify(instagramPollingStart));
   console.log("Content runtime startup", JSON.stringify(contentStart));
   console.log("Hyper Crew startup", JSON.stringify(crewStart));
   console.log("Content control startup", JSON.stringify(controlStart));
@@ -321,7 +346,7 @@ async function start() {
   console.log("Durable database startup", JSON.stringify(databaseStart));
 
   app.listen(PORT, () => {
-    console.log(`Astel Social Engine listening on port ${PORT}; model=${OPENAI_MODEL}; providers=${legacy.socialContext.providers.list().length}; threadsEnabled=${legacy.safety.isEnabled()}; threadsDryRun=${legacy.safety.isDryRun()}; secondary=${secondaryCommunity.size}; publishEnabled=${publishEngine.health().enabled}; publishDryRun=${publishEngine.health().dryRun}; analyticsEnabled=${analyticsEngine.health().enabled}; contentEnabled=${contentRuntime.health().enabled}; hyperCrewEnabled=${hyperCrew.health().enabled}; contentControlEnabled=${contentControl.health().enabled}; databaseConnected=${postgresStore.isReady()}`);
+    console.log(`Astel Social Engine listening on port ${PORT}; model=${OPENAI_MODEL}; providers=${legacy.socialContext.providers.list().length}; threadsEnabled=${legacy.safety.isEnabled()}; threadsDryRun=${legacy.safety.isDryRun()}; secondary=${secondaryCommunity.size}; instagramPolling=${instagramPollers.filter(poller => poller.health().enabled).length}; publishEnabled=${publishEngine.health().enabled}; publishDryRun=${publishEngine.health().dryRun}; analyticsEnabled=${analyticsEngine.health().enabled}; contentEnabled=${contentRuntime.health().enabled}; hyperCrewEnabled=${hyperCrew.health().enabled}; contentControlEnabled=${contentControl.health().enabled}; databaseConnected=${postgresStore.isReady()}`);
   });
 
   if (PROACTIVE_PERMISSION_PROBE === "true") {
@@ -351,6 +376,7 @@ module.exports = {
   start,
   metaWebhookRouter,
   secondaryCommunity,
+  instagramPollers,
   postgresStore,
   durable,
   analyticsRepository,
