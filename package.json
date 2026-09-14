@@ -4,7 +4,8 @@
   "description": "Astel Social Engine for Threads, Instagram and Facebook with Redis safety",
   "main": "server.js",
   "scripts": {
-    "start": "node server-meta.js",
+    "start": "node server-meta-runtime.js",
+    "start:meta-legacy": "node server-meta.js",
     "start:legacy": "node server.js",
     "test": "node --test tests/*.test.js"
   },
