@@ -9,6 +9,22 @@ function normalizeBaseUrl(value) {
   return String(value || DEFAULT_BASE_URL).replace(/\/+$/, "");
 }
 
+function safeMetaFailure(result) {
+  if (result.transportError) {
+    return { status: "failed", reason: "NETWORK_ERROR", code: null, items: [] };
+  }
+  if (!result.response?.ok || result.data?.error) {
+    return {
+      status: "failed",
+      reason: "META_REJECTED",
+      code: result.data?.error?.code || null,
+      type: result.data?.error?.type || null,
+      items: [],
+    };
+  }
+  return null;
+}
+
 function createInstagramAdapter({
   accessToken,
   userId,
@@ -28,6 +44,30 @@ function createInstagramAdapter({
     return `${baseUrl}/${apiVersion}/${String(path || "").replace(/^\/+/, "")}`;
   }
 
+  function createCommentEvent(value = {}, { rootId = null, ingress = "webhook", webhookField = null } = {}) {
+    const sourceId = value?.comment_id || value?.id;
+    if (!sourceId) return null;
+    const metadata = ingress === "webhook"
+      ? { webhookField, targetUserId: userId || null }
+      : { ingress: "polling", targetUserId: userId || null };
+    return createSocialEvent({
+      platform: "instagram",
+      accountKey,
+      type: SOCIAL_EVENT_TYPES.COMMENT_CREATED,
+      sourceId,
+      rootId: value?.media?.id || value?.media_id || rootId || null,
+      parentId: value?.parent_id || null,
+      text: value?.text || "",
+      author: {
+        id: value?.from?.id || value?.user?.id || null,
+        username: value?.from?.username || value?.username || null,
+      },
+      surface: value?.media?.media_product_type || null,
+      timestamp: value?.timestamp || null,
+      metadata,
+    });
+  }
+
   function parseWebhook(body) {
     const events = [];
     if (body?.object && body.object !== "instagram") return events;
@@ -44,29 +84,11 @@ function createInstagramAdapter({
 
       for (const change of changes) {
         if (!["comments", "live_comments"].includes(change?.field)) continue;
-        const value = change?.value;
-        const sourceId = value?.comment_id || value?.id;
-        if (!sourceId) continue;
-
-        events.push(createSocialEvent({
-          platform: "instagram",
-          accountKey,
-          type: SOCIAL_EVENT_TYPES.COMMENT_CREATED,
-          sourceId,
-          rootId: value?.media?.id || value?.media_id || null,
-          parentId: value?.parent_id || null,
-          text: value?.text || "",
-          author: {
-            id: value?.from?.id || value?.user?.id || null,
-            username: value?.from?.username || value?.username || null,
-          },
-          surface: value?.media?.media_product_type || null,
-          timestamp: value?.timestamp || null,
-          metadata: {
-            webhookField: change.field,
-            targetUserId,
-          },
-        }));
+        const event = createCommentEvent(change?.value, {
+          ingress: "webhook",
+          webhookField: change.field,
+        });
+        if (event) events.push(event);
       }
     }
     return events;
@@ -90,6 +112,51 @@ function createInstagramAdapter({
     let data = null;
     try { data = await response.json(); } catch (_) {}
     return { transportError: null, response, data };
+  }
+
+  async function listRecentMedia({ limit = 10 } = {}) {
+    if (!accessToken || !userId) return { status: "failed", reason: "INVALID_CONFIG", code: null, items: [] };
+    const boundedLimit = Math.max(1, Math.min(25, Number(limit) || 10));
+    const fields = "id,timestamp,media_product_type,comments_count";
+    const url = `${endpoint(`${encodeURIComponent(userId)}/media`)}?fields=${encodeURIComponent(fields)}&limit=${boundedLimit}`;
+    const result = await requestJson(url, { method: "GET" });
+    const failure = safeMetaFailure(result);
+    if (failure) return failure;
+    return {
+      status: "ok",
+      items: Array.isArray(result.data?.data) ? result.data.data : [],
+    };
+  }
+
+  async function listComments(mediaId, { limit = 50 } = {}) {
+    if (!accessToken || !mediaId) return { status: "failed", reason: "INVALID_CONFIG_OR_INPUT", code: null, items: [] };
+    const boundedLimit = Math.max(1, Math.min(50, Number(limit) || 50));
+    const fields = "id,text,username,from,parent_id,timestamp,replies{id,text,username,from,parent_id,timestamp}";
+    const url = `${endpoint(`${encodeURIComponent(mediaId)}/comments`)}?fields=${encodeURIComponent(fields)}&limit=${boundedLimit}`;
+    const result = await requestJson(url, { method: "GET" });
+    const failure = safeMetaFailure(result);
+    if (failure) return failure;
+
+    const items = [];
+    for (const comment of Array.isArray(result.data?.data) ? result.data.data : []) {
+      items.push({ ...comment, media: comment?.media || { id: String(mediaId) } });
+      for (const reply of Array.isArray(comment?.replies?.data) ? comment.replies.data : []) {
+        items.push({
+          ...reply,
+          parent_id: reply?.parent_id || comment?.id || null,
+          media: reply?.media || { id: String(mediaId) },
+        });
+      }
+    }
+    return { status: "ok", items };
+  }
+
+  function normalizePolledComment(comment, mediaId) {
+    return createCommentEvent(comment, {
+      rootId: mediaId,
+      ingress: "polling",
+      webhookField: null,
+    });
   }
 
   async function getComment(commentId) {
@@ -132,6 +199,9 @@ function createInstagramAdapter({
 
   return {
     parseWebhook,
+    listRecentMedia,
+    listComments,
+    normalizePolledComment,
     getComment,
     reply,
     config: Object.freeze({ apiVersion, baseUrl }),
