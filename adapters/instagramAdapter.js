@@ -47,6 +47,9 @@ function createInstagramAdapter({
   function createCommentEvent(value = {}, { rootId = null, ingress = "webhook", webhookField = null } = {}) {
     const sourceId = value?.comment_id || value?.id;
     if (!sourceId) return null;
+    const metadata = ingress === "webhook"
+      ? { webhookField, targetUserId: userId || null }
+      : { ingress: "polling", targetUserId: userId || null };
     return createSocialEvent({
       platform: "instagram",
       accountKey,
@@ -61,11 +64,7 @@ function createInstagramAdapter({
       },
       surface: value?.media?.media_product_type || null,
       timestamp: value?.timestamp || null,
-      metadata: {
-        ingress,
-        webhookField,
-        targetUserId: userId || null,
-      },
+      metadata,
     });
   }
 
