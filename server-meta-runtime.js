@@ -20,6 +20,7 @@ const {
   THREADS_POLLING_INTERVAL_MS = "60000",
   THREADS_POLLING_POSTS_LIMIT = "10",
   THREADS_POLLING_REPLIES_LIMIT = "50",
+  THREADS_POLLING_FULL_SCAN_EVERY = "10",
 } = process.env;
 
 base.app.use(createPublicLegalRouter());
@@ -47,6 +48,7 @@ const threadsPollers = legacy.socialContext.providers.list()
     intervalMs: Number(THREADS_POLLING_INTERVAL_MS),
     postsLimit: Number(THREADS_POLLING_POSTS_LIMIT),
     repliesLimit: Number(THREADS_POLLING_REPLIES_LIMIT),
+    fullScanEvery: Number(THREADS_POLLING_FULL_SCAN_EVERY),
   }));
 
 base.app.get("/health/instagram-polling", (_req, res) => {
