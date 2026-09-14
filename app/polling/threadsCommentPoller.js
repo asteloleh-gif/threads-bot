@@ -21,6 +21,7 @@ function createThreadsCommentPoller({
   intervalMs = 60000,
   postsLimit = 10,
   repliesLimit = 50,
+  fullScanEvery = 10,
   store,
   reader,
   logger = console,
@@ -37,11 +38,13 @@ function createThreadsCommentPoller({
   const pollEveryMs = clamp(intervalMs, 15000, 3600000, 60000);
   const recentPostsLimit = clamp(postsLimit, 1, 25, 10);
   const perPostRepliesLimit = clamp(repliesLimit, 1, 100, 50);
+  const fullScanEveryCycles = clamp(fullScanEvery, 1, 100, 10);
 
   let timer = null;
   let running = false;
   let initialized = false;
   let primed = false;
+  let cycleNumber = 0;
   let lastCycleAt = null;
   let lastError = null;
   let lastStats = null;
@@ -57,6 +60,7 @@ function createThreadsCommentPoller({
       intervalMs: pollEveryMs,
       postsLimit: recentPostsLimit,
       repliesLimit: perPostRepliesLimit,
+      fullScanEvery: fullScanEveryCycles,
       lastCycleAt,
       lastError,
       lastStats,
@@ -74,10 +78,11 @@ function createThreadsCommentPoller({
     const postIds = [];
     let readFailures = 0;
 
+    // Prime every visible post, even if has_replies is false. This prevents a
+    // stale Meta flag from turning historical replies into a first-run blast.
     for (const post of posts) {
       if (!post?.id) continue;
       postIds.push(String(post.id));
-      if (!post?.metadata?.hasReplies) continue;
       const result = await readConversation(post.id);
       if (result.status !== "ok") {
         readFailures += 1;
@@ -125,6 +130,8 @@ function createThreadsCommentPoller({
         return lastStats;
       }
 
+      cycleNumber += 1;
+      const fullScan = cycleNumber % fullScanEveryCycles === 0;
       const seen = await pollStore.getSeen(accountKey);
       const knownPosts = await pollStore.getKnownPosts(accountKey);
       const currentPostIds = posts.map(post => String(post.id));
@@ -135,7 +142,7 @@ function createThreadsCommentPoller({
       for (const post of posts) {
         const postId = String(post.id);
         const isNewPost = !knownPosts.has(postId);
-        if (!post?.metadata?.hasReplies && !isNewPost) continue;
+        if (!fullScan && !post?.metadata?.hasReplies && !isNewPost) continue;
 
         const result = await readConversation(postId);
         reads += 1;
@@ -189,6 +196,7 @@ function createThreadsCommentPoller({
         posts: posts.length,
         reads,
         readFailures,
+        fullScan,
         discovered: discovered.length,
         processed,
         deferred,
