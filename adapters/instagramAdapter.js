@@ -2,7 +2,7 @@ const fetch = require("node-fetch");
 const { SOCIAL_EVENT_TYPES, createSocialEvent } = require("../app/events/socialEvent");
 
 const DEFAULT_API_VERSION = "v26.0";
-const DEFAULT_BASE_URL = "https://graph.facebook.com";
+const DEFAULT_BASE_URL = "https://graph.instagram.com";
 const DEFAULT_FETCH_TIMEOUT_MS = 20000;
 
 function normalizeBaseUrl(value) {
@@ -36,7 +36,13 @@ function createInstagramAdapter({
       const targetUserId = entry?.id ? String(entry.id) : null;
       if (!userId || targetUserId !== userId) continue;
 
-      for (const change of Array.isArray(entry?.changes) ? entry.changes : []) {
+      const changes = Array.isArray(entry?.changes)
+        ? entry.changes
+        : entry?.field
+          ? [{ field: entry.field, value: entry.value }]
+          : [];
+
+      for (const change of changes) {
         if (!["comments", "live_comments"].includes(change?.field)) continue;
         const value = change?.value;
         const sourceId = value?.comment_id || value?.id;

@@ -361,3 +361,23 @@ Never put access tokens, secrets, passwords, private connection strings, or othe
 **Changed services:** New isolated empty US project only at this checkpoint. No existing service config/Meta settings changed; no tokens copied.
 
 **External blockers:** Astel app secret, Page/IG token grants/validity/expiry and OpenAI/brand knowledge configuration must be securely provisioned. No app webhooks currently subscribed. Real inbound dry-run and first approved replies pending. Privacy policy/category/icon, App Review and business legal verification remain incomplete. IG/FB publishing and insights providers remain unsupported.
+
+---
+
+## 2026-09-14 — Instagram Login comment compatibility
+
+**Status:** DONE
+
+**Done:**
+- Switched the Instagram adapter default API host to `graph.instagram.com` while retaining Graph API `v26.0`.
+- Added support for the Instagram Login `entry.field` / `entry.value` webhook shape while preserving the existing `entry.changes[]` shape.
+- Preserved strict account and field filtering, bearer-header authentication, token-free URLs, and fail-closed no-retry reply behavior.
+
+**Commits/PRs:** `codex/instagram-login-compat`; PR pending merge to `main`
+
+**Regression:** Full suite passes on the dedicated branch.
+
+**Changed files/services:** `adapters/instagramAdapter.js`, `tests/instagramProvider.test.js`, `docs/AGENT_LOG.md`; no deployment or external service configuration.
+
+**Open questions / external verification:**
+- Instagram OAuth, token validation, webhook configuration, and Development-mode delivery remain pending and require separate authorization.

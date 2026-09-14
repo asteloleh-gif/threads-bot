@@ -41,7 +41,7 @@ test("normalized social event is immutable and account scoped", () => {
   assert.equal(Object.isFrozen(event.author), true);
 });
 
-test("Instagram webhook parser emits normalized top-level comment event", () => {
+test("Instagram webhook parser accepts the Instagram Login entry field/value shape", () => {
   const adapter = createInstagramAdapter({
     accessToken: "token",
     userId: "ig-1",
@@ -51,16 +51,14 @@ test("Instagram webhook parser emits normalized top-level comment event", () => 
     object: "instagram",
     entry: [{
       id: "ig-1",
-      changes: [{
-        field: "comments",
-        value: {
-          id: "comment-1",
-          text: "Price?",
-          from: { id: "user-1", username: "buyer" },
-          media: { id: "media-1", media_product_type: "FEED" },
-          timestamp: "2026-09-13T05:00:00+0000",
-        },
-      }],
+      field: "comments",
+      value: {
+        id: "comment-1",
+        text: "Price?",
+        from: { id: "user-1", username: "buyer" },
+        media: { id: "media-1", media_product_type: "FEED" },
+        timestamp: "2026-09-13T05:00:00+0000",
+      },
     }],
   });
   assert.equal(events.length, 1);
@@ -79,6 +77,19 @@ test("Instagram webhook parser emits normalized top-level comment event", () => 
   });
 });
 
+test("Instagram webhook parser preserves the legacy changes array shape", () => {
+  const adapter = createInstagramAdapter({ accessToken: "token", userId: "ig-1", accountKey: "a:instagram" });
+  const [event] = adapter.parseWebhook({
+    object: "instagram",
+    entry: [{ id: "ig-1", changes: [{ field: "comments", value: {
+      comment_id: "comment-legacy", media_id: "media-legacy", text: "Legacy", from: { id: "user-legacy" },
+    } }] }],
+  });
+  assert.equal(event.sourceId, "comment-legacy");
+  assert.equal(event.rootId, "media-legacy");
+  assert.equal(event.metadata.webhookField, "comments");
+});
+
 test("Instagram webhook parser preserves parent comment and supports live comments", () => {
   const adapter = createInstagramAdapter({ accessToken: "token", userId: "ig-1", accountKey: "a:instagram" });
   const [event] = adapter.parseWebhook({
@@ -93,8 +104,8 @@ test("Instagram webhook parser preserves parent comment and supports live commen
 
 test("Instagram webhook parser ignores another account and unrelated fields", () => {
   const adapter = createInstagramAdapter({ accessToken: "token", userId: "ig-1", accountKey: "a:instagram" });
-  assert.deepEqual(adapter.parseWebhook({ object: "instagram", entry: [{ id: "ig-2", changes: [{ field: "comments", value: { id: "c" } }] }] }), []);
-  assert.deepEqual(adapter.parseWebhook({ object: "instagram", entry: [{ id: "ig-1", changes: [{ field: "messages", value: { id: "m" } }] }] }), []);
+  assert.deepEqual(adapter.parseWebhook({ object: "instagram", entry: [{ id: "ig-2", field: "comments", value: { id: "c" } }] }), []);
+  assert.deepEqual(adapter.parseWebhook({ object: "instagram", entry: [{ id: "ig-1", field: "messages", value: { id: "m" } }] }), []);
   assert.deepEqual(adapter.parseWebhook({ object: "page", entry: [{ id: "ig-1", changes: [{ field: "comments", value: { id: "c" } }] }] }), []);
 });
 
@@ -112,7 +123,7 @@ test("Instagram reply publishes once with bearer auth and no token in URL", asyn
   const result = await adapter.reply("comment-1", "hello");
   assert.deepEqual(result, { status: "published", id: "published-comment-1" });
   assert.equal(calls.length, 1);
-  assert.match(calls[0].url, /\/v26\.0\/comment-1\/replies$/);
+  assert.equal(calls[0].url, "https://graph.instagram.com/v26.0/comment-1/replies");
   assert.doesNotMatch(calls[0].url, /secret-token/);
   assert.equal(calls[0].options.headers.Authorization, "Bearer secret-token");
   assert.equal(calls[0].options.body.get("message"), "hello");
