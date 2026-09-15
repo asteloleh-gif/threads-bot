@@ -66,6 +66,72 @@ test("Instagram Facebook Login resolves linked Page token and probes IG identity
   assert.equal(calls.some(call => call.url.includes("secret-page-token")), false);
 });
 
+test("Instagram Facebook Login discovers Facebook-linked IG id by username when configured id differs", async () => {
+  const calls = [];
+  const adapter = createInstagramAdapter({
+    accessToken: "secret-user-token",
+    userId: "instagram-login-scoped-id",
+    username: "@astel.us",
+    accountKey: "astel.us:instagram",
+    authMode: "facebook_login",
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      const parsed = new URL(url);
+      if (parsed.pathname === "/v26.0/me/accounts") {
+        return response(200, {
+          data: [
+            {
+              id: "page-other",
+              access_token: "other-page-token",
+              instagram_business_account: { id: "ig-other" },
+            },
+            {
+              id: "page-astel",
+              access_token: "astel-page-token",
+              instagram_business_account: { id: "facebook-linked-ig-id" },
+            },
+          ],
+        });
+      }
+      if (parsed.pathname === "/v26.0/ig-other") {
+        return response(200, { id: "ig-other", username: "someone.else" });
+      }
+      if (parsed.pathname === "/v26.0/facebook-linked-ig-id") {
+        const fields = parsed.searchParams.get("fields");
+        if (fields === "id,username") {
+          return response(200, { id: "facebook-linked-ig-id", username: "astel.us" });
+        }
+        return response(200, {
+          id: "facebook-linked-ig-id",
+          username: "astel.us",
+          account_type: "BUSINESS",
+          media_count: 17,
+        });
+      }
+      if (parsed.pathname === "/v26.0/facebook-linked-ig-id/media") {
+        return response(200, { data: [{ id: "media-1", comments_count: 0 }] });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+  });
+
+  const identity = await adapter.getAccountIdentity();
+  assert.equal(identity.status, "ok");
+  assert.equal(identity.identity.userId, "facebook-linked-ig-id");
+  assert.equal(identity.identity.username, "astel.us");
+  assert.equal(identity.identity.mediaCount, 17);
+
+  const media = await adapter.listRecentMedia();
+  assert.equal(media.status, "ok");
+  assert.equal(media.items.length, 1);
+  assert.equal(calls.filter(call => new URL(call.url).pathname === "/v26.0/me/accounts").length, 1);
+  const mediaCall = calls.find(call => new URL(call.url).pathname === "/v26.0/facebook-linked-ig-id/media");
+  assert.ok(mediaCall);
+  assert.equal(mediaCall.options.headers.Authorization, "Bearer astel-page-token");
+  assert.equal(calls.some(call => call.url.includes("secret-user-token")), false);
+  assert.equal(calls.some(call => call.url.includes("astel-page-token")), false);
+});
+
 test("Instagram Facebook Login caches Page token and uses it for media reads", async () => {
   const calls = [];
   const adapter = createInstagramAdapter({
@@ -138,14 +204,19 @@ test("Instagram auth mode loads from env and provider exposes only safe mode met
   const account = accounts.find(item => item.platform === "instagram");
   assert.equal(account.authMode, "facebook_login");
 
+  let adapterOptions = null;
   const provider = createInstagramProvider({
     account,
-    adapterFactory: options => ({
-      config: { apiVersion: "v26.0", authMode: options.authMode, baseUrl: "https://graph.facebook.com" },
-      parseWebhook() { return []; },
-      async reply() { return { status: "published", id: "r1" }; },
-    }),
+    adapterFactory: options => {
+      adapterOptions = options;
+      return {
+        config: { apiVersion: "v26.0", authMode: options.authMode, baseUrl: "https://graph.facebook.com" },
+        parseWebhook() { return []; },
+        async reply() { return { status: "published", id: "r1" }; },
+      };
+    },
   });
+  assert.equal(adapterOptions.username, "astel.us");
   assert.equal(provider.health().authMode, "facebook_login");
   assert.doesNotMatch(JSON.stringify(provider.health()), /secret-user-token/);
 });
