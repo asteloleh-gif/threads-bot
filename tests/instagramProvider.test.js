@@ -109,6 +109,45 @@ test("Instagram webhook parser ignores another account and unrelated fields", ()
   assert.deepEqual(adapter.parseWebhook({ object: "page", entry: [{ id: "ig-1", changes: [{ field: "comments", value: { id: "c" } }] }] }), []);
 });
 
+test("Instagram identity probe uses bearer auth and preserves both Instagram IDs", async () => {
+  const calls = [];
+  const adapter = createInstagramAdapter({
+    accessToken: "secret-token",
+    userId: "ig-professional-1",
+    accountKey: "a:instagram",
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return response(200, {
+        id: "app-scoped-1",
+        user_id: "ig-professional-1",
+        username: "astel.us",
+        account_type: "BUSINESS",
+        media_count: 17,
+      });
+    },
+  });
+
+  const result = await adapter.getAccountIdentity();
+  assert.deepEqual(result, {
+    status: "ok",
+    identity: {
+      id: "app-scoped-1",
+      userId: "ig-professional-1",
+      username: "astel.us",
+      accountType: "BUSINESS",
+      mediaCount: 17,
+    },
+  });
+  assert.equal(calls.length, 1);
+  const url = new URL(calls[0].url);
+  assert.equal(url.origin, "https://graph.instagram.com");
+  assert.equal(url.pathname, "/v26.0/me");
+  assert.equal(url.searchParams.get("fields"), "id,user_id,username,account_type,media_count");
+  assert.equal(url.searchParams.has("access_token"), false);
+  assert.equal(calls[0].options.headers.Authorization, "Bearer secret-token");
+  assert.doesNotMatch(calls[0].url, /secret-token/);
+});
+
 test("Instagram reply publishes once with bearer auth and no token in URL", async () => {
   const calls = [];
   const adapter = createInstagramAdapter({
