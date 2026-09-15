@@ -38,7 +38,6 @@ test("Instagram Facebook Login resolves linked Page token and probes IG identity
         return response(200, {
           id: "ig-123",
           username: "astel.us",
-          account_type: "BUSINESS",
           media_count: 42,
         });
       }
@@ -53,7 +52,7 @@ test("Instagram Facebook Login resolves linked Page token and probes IG identity
       id: "ig-123",
       userId: "ig-123",
       username: "astel.us",
-      accountType: "BUSINESS",
+      accountType: null,
       mediaCount: 42,
     },
   });
@@ -62,6 +61,8 @@ test("Instagram Facebook Login resolves linked Page token and probes IG identity
   assert.equal(calls.length, 2);
   assert.equal(calls[0].options.headers.Authorization, "Bearer secret-user-token");
   assert.equal(calls[1].options.headers.Authorization, "Bearer secret-page-token");
+  assert.equal(new URL(calls[1].url).searchParams.get("fields"), "id,username,media_count");
+  assert.equal(new URL(calls[1].url).searchParams.get("fields").includes("account_type"), false);
   assert.equal(calls.some(call => call.url.includes("secret-user-token")), false);
   assert.equal(calls.some(call => call.url.includes("secret-page-token")), false);
 });
