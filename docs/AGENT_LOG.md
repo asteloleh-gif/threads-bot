@@ -381,3 +381,36 @@ Never put access tokens, secrets, passwords, private connection strings, or othe
 
 **Open questions / external verification:**
 - Instagram OAuth, token validation, webhook configuration, and Development-mode delivery remain pending and require separate authorization.
+
+---
+
+## 2026-09-15 — Checkpoint v2026.09.15 — Astel US production canary + Airtable security knowledge layer
+
+**Status:** DONE
+
+**Done:**
+- Merged PR #55 and fixed the Threads reply publishing contract collision. `ThreadsProvider.publishReply(parentId, text)` can no longer be overwritten by the adapter's internal `publishReply(creationId)` method.
+- Verified astel.us Threads live E2E after #55: inbound external comment → AI generation → reply container → official publish → published reply ID. Self-authored loop guard also observed.
+- Verified latest astel.us Railway deployment `7c587f0d-3a99-4e15-a8f7-b7216d2c2a0e` is `SUCCESS`; pre-deploy suite passes 208/208 and `/health` succeeds.
+- Added a dedicated Airtable base `Astel US — Social Copilot` with `Comments`, `KnowledgeBase`, `BotSettings`, and isolated `RedTeamTests` tables.
+- Added the same `RedTeamTests` structure to the existing `Leo Akastel — Threads Comment Bot` and `Leo Akastel — Threads RU Bot` bases.
+- Loaded all 35 security regression cases into `RedTeamTests` in all three bases while keeping raw attack payloads out of trusted runtime KB context.
+- Added 9 active defensive KnowledgeBase rules to all three bases and recorded `RED_TEAM_SUITE_V1` in BotSettings.
+- Recorded live astel.us security smoke PASS for test `1.2` (debug/raw config request) and `8.1` (fake Meta support/token request).
+- Added `AIRTABLE_API_KEY` and `AIRTABLE_BASE_ID` variable names to `copilot-astel-us`; deployment is healthy. Runtime code reads only Active records from `KnowledgeBase` / `Knowledge Base`.
+- Updated `CODEBASE_MEMORY.md` to snapshot version `v2026.09.15` and made it the canonical current-state handoff for ChatGPT/Codex/Claude.
+- Developer context captured: Context7 connected for Codex; Supabase connected with no projects; Vercel connected with no usable project surface at this checkpoint; PostHog available to ChatGPT but not yet instrumented into the engine.
+
+**Commits/PRs:** #55 (`541deb559ee12e0f2c15a28cffb5fbb397984d14`); documentation checkpoint commit containing this entry and `CODEBASE_MEMORY.md` v2026.09.15.
+
+**Regression:** 208/208 tests pass on latest astel.us deployment; Railway healthcheck passes.
+
+**Changed files/services:** `app/providers/threadsProvider.js`, architecture regression test from #55; astel.us Railway environment/deployment; three Airtable bases; `docs/CODEBASE_MEMORY.md`; `docs/AGENT_LOG.md`.
+
+**Open questions / external verification:**
+- Airtable variable presence and healthy deployment are verified, but the next controlled live reply must explicitly prove that Active KnowledgeBase content is being consumed at runtime.
+- Run the full 35-case red-team suite mostly through test/dry-run before promoting other social deployments; keep only a small representative live smoke set.
+- Instagram real comment ingress/media visibility and first controlled live reply remain pending.
+- Facebook real Page comment ingress/reply remains pending.
+- `astel.u` is intentionally not yet promoted to the #55/current canary baseline; promote only after astel.us release gate passes.
+- `npm audit` still reports 2 moderate dependency vulnerabilities; backlog, do not apply a blind production fix.
