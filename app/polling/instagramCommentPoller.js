@@ -46,6 +46,7 @@ function createInstagramCommentPoller({
   let lastCycleAt = null;
   let lastError = null;
   let lastStats = null;
+  let lastIdentityProbe = null;
 
   function health() {
     return {
@@ -62,8 +63,49 @@ function createInstagramCommentPoller({
       lastCycleAt,
       lastError,
       lastStats,
+      identityProbe: lastIdentityProbe,
       store: pollStore.health?.() || null,
     };
+  }
+
+  async function probeIdentity() {
+    if (typeof provider.getAccountIdentity !== "function") {
+      lastIdentityProbe = { status: "skipped", reason: "IDENTITY_PROBE_UNSUPPORTED" };
+      return lastIdentityProbe;
+    }
+
+    let result;
+    try {
+      result = await provider.getAccountIdentity();
+    } catch (error) {
+      result = { status: "failed", reason: "IDENTITY_PROBE_EXCEPTION" };
+    }
+
+    if (result?.status !== "ok") {
+      lastIdentityProbe = {
+        status: "failed",
+        reason: result?.reason || "IDENTITY_PROBE_FAILED",
+        code: result?.code || null,
+      };
+      logger.log("Instagram identity probe", JSON.stringify({ accountKey, ...lastIdentityProbe }));
+      return lastIdentityProbe;
+    }
+
+    const identity = result.identity || {};
+    const configuredUserId = String(provider.account?.userId || "").trim();
+    const configuredUsername = String(provider.account?.username || "").trim().toLowerCase();
+    const candidateIds = [identity.id, identity.userId].filter(Boolean).map(String);
+    const observedUsername = String(identity.username || "").trim().toLowerCase();
+
+    lastIdentityProbe = {
+      status: "ok",
+      idMatch: Boolean(configuredUserId && candidateIds.includes(configuredUserId)),
+      usernameMatch: Boolean(configuredUsername && observedUsername && configuredUsername === observedUsername),
+      accountType: identity.accountType || null,
+      mediaCount: Number.isFinite(identity.mediaCount) ? identity.mediaCount : null,
+    };
+    logger.log("Instagram identity probe", JSON.stringify({ accountKey, ...lastIdentityProbe }));
+    return lastIdentityProbe;
   }
 
   async function readMediaComments(media, { force = false } = {}) {
@@ -245,6 +287,7 @@ function createInstagramCommentPoller({
       lastError = storeStart.reason;
       return storeStart;
     }
+    await probeIdentity();
     const first = await runOnce();
     timer = setInterval(() => {
       runOnce().catch(error => {
@@ -253,7 +296,7 @@ function createInstagramCommentPoller({
       });
     }, pollEveryMs);
     timer.unref?.();
-    return { status: "ok", reason: "STARTED", first };
+    return { status: "ok", reason: "STARTED", identityProbe: lastIdentityProbe, first };
   }
 
   async function stop() {
