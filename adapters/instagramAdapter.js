@@ -43,6 +43,7 @@ function createInstagramAdapter({
   accessToken,
   userId,
   username,
+  linkedPageId,
   linkedPageAccessToken,
   accountKey,
   authMode = DEFAULT_AUTH_MODE,
@@ -54,6 +55,7 @@ function createInstagramAdapter({
   accessToken = String(accessToken || "").trim();
   userId = String(userId || "").trim();
   username = normalizeUsername(username);
+  linkedPageId = String(linkedPageId || "").trim();
   linkedPageAccessToken = String(linkedPageAccessToken || "").trim();
   accountKey = String(accountKey || "instagram:default").trim().toLowerCase();
   authMode = normalizeAuthMode(authMode);
@@ -80,6 +82,10 @@ function createInstagramAdapter({
       pagesWithInstagram: 0,
       identityLookupAttempts: 0,
       identityLookupSuccesses: 0,
+      knownPageConfigured: Boolean(linkedPageId),
+      knownPageAttempted: false,
+      knownPageHasInstagram: false,
+      knownPageAccessTokenReturned: false,
       pageTokenFallbackConfigured: Boolean(linkedPageAccessToken),
       pageTokenFallbackAttempted: false,
       pageTokenFallbackHasInstagram: false,
@@ -91,13 +97,18 @@ function createInstagramAdapter({
   }
 
   function shouldExposeAuthDiagnostics(auth) {
-    return Boolean(auth?.diagnostics?.pageTokenFallbackAttempted);
+    return Boolean(
+      auth?.diagnostics?.knownPageAttempted ||
+      auth?.diagnostics?.pageTokenFallbackAttempted
+    );
   }
 
   function authMetadata(auth) {
     if (!shouldExposeAuthDiagnostics(auth)) return {};
     return {
-      ...(auth?.resolution === "configured_page_token" ? { resolution: auth.resolution } : {}),
+      ...(["known_page_id", "configured_page_token"].includes(auth?.resolution)
+        ? { resolution: auth.resolution }
+        : {}),
       diagnostics: { ...auth.diagnostics },
     };
   }
@@ -224,6 +235,58 @@ function createInstagramAdapter({
     };
   }
 
+  async function resolveKnownPageFallback(diagnostics) {
+    if (!linkedPageId) return null;
+    diagnostics.knownPageAttempted = true;
+
+    const pageFields = "id,access_token,instagram_business_account";
+    const pageResult = await requestJson(
+      `${endpoint(encodeURIComponent(linkedPageId))}?fields=${encodeURIComponent(pageFields)}`,
+      { method: "GET" },
+      accessToken
+    );
+    const pageFailure = safeMetaFailure(pageResult);
+    if (pageFailure) {
+      return withDiagnostics({
+        status: "failed",
+        reason: pageFailure.reason,
+        code: pageFailure.code || null,
+        type: pageFailure.type || null,
+      }, diagnostics);
+    }
+
+    const linkedId = String(pageResult.data?.instagram_business_account?.id || "").trim();
+    const pageToken = String(pageResult.data?.access_token || "").trim();
+    diagnostics.knownPageHasInstagram = Boolean(linkedId);
+    diagnostics.knownPageAccessTokenReturned = Boolean(pageToken);
+    if (!linkedId) {
+      return withDiagnostics({ status: "failed", reason: "KNOWN_PAGE_HAS_NO_LINKED_INSTAGRAM", code: null }, diagnostics);
+    }
+    if (!pageToken) {
+      return withDiagnostics({ status: "failed", reason: "KNOWN_PAGE_ACCESS_TOKEN_MISSING", code: null }, diagnostics);
+    }
+
+    const verified = await verifyLinkedUsername(linkedId, pageToken, diagnostics);
+    if (verified.status !== "ok") {
+      return withDiagnostics({
+        status: "failed",
+        reason: verified.reason || "KNOWN_PAGE_IDENTITY_LOOKUP_FAILED",
+        code: verified.code || null,
+        type: verified.type || null,
+      }, diagnostics);
+    }
+    if (!verified.usernameMatch) {
+      return withDiagnostics({ status: "failed", reason: "KNOWN_PAGE_INSTAGRAM_USERNAME_MISMATCH", code: null }, diagnostics);
+    }
+
+    return cacheFacebookCredentials({
+      linkedId,
+      pageToken,
+      resolution: "known_page_id",
+      diagnostics,
+    });
+  }
+
   async function resolveConfiguredPageTokenFallback(diagnostics) {
     if (!linkedPageAccessToken) return null;
     diagnostics.pageTokenFallbackAttempted = true;
@@ -270,6 +333,28 @@ function createInstagramAdapter({
     });
   }
 
+  async function tryExplicitFallbacks(diagnostics) {
+    const knownPage = await resolveKnownPageFallback(diagnostics);
+    if (knownPage?.status === "ok") return knownPage;
+
+    const configuredPageToken = await resolveConfiguredPageTokenFallback(diagnostics);
+    if (configuredPageToken?.status === "ok") return configuredPageToken;
+
+    if (knownPage) return withDiagnostics({
+      status: "failed",
+      reason: knownPage.reason,
+      code: knownPage.code || null,
+      ...(knownPage.type ? { type: knownPage.type } : {}),
+    }, diagnostics);
+    if (configuredPageToken) return withDiagnostics({
+      status: "failed",
+      reason: configuredPageToken.reason,
+      code: configuredPageToken.code || null,
+      ...(configuredPageToken.type ? { type: configuredPageToken.type } : {}),
+    }, diagnostics);
+    return null;
+  }
+
   async function resolveFacebookPageToken() {
     if (authMode !== "facebook_login") {
       return { status: "ok", token: accessToken, userId, resolution: "instagram_login" };
@@ -293,9 +378,9 @@ function createInstagramAdapter({
     const result = await requestJson(url, { method: "GET" }, accessToken);
     const failure = safeMetaFailure(result);
     if (failure) {
-      const fallback = await resolveConfiguredPageTokenFallback(diagnostics);
-      if (fallback?.status === "ok") return fallback;
-      return fallback || withDiagnostics({
+      const fallback = await tryExplicitFallbacks(diagnostics);
+      if (fallback) return fallback;
+      return withDiagnostics({
         status: "failed",
         reason: failure.reason,
         code: failure.code || null,
@@ -331,9 +416,9 @@ function createInstagramAdapter({
       }
 
       if (diagnostics.identityLookupAttempts > 0 && diagnostics.identityLookupSuccesses === 0 && firstLookupFailure) {
-        const fallback = await resolveConfiguredPageTokenFallback(diagnostics);
-        if (fallback?.status === "ok") return fallback;
-        return fallback || withDiagnostics({
+        const fallback = await tryExplicitFallbacks(diagnostics);
+        if (fallback) return fallback;
+        return withDiagnostics({
           status: "failed",
           reason: firstLookupFailure.reason,
           code: firstLookupFailure.code || null,
@@ -342,8 +427,7 @@ function createInstagramAdapter({
       }
     }
 
-    const fallback = await resolveConfiguredPageTokenFallback(diagnostics);
-    if (fallback?.status === "ok") return fallback;
+    const fallback = await tryExplicitFallbacks(diagnostics);
     if (fallback) return fallback;
     return withDiagnostics({ status: "failed", reason: "LINKED_PAGE_NOT_FOUND", code: null }, diagnostics);
   }
