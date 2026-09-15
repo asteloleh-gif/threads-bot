@@ -35,6 +35,7 @@ function createAccountConfig(input = {}) {
     username,
     accessToken: normalize(input.accessToken) || null,
     verifyToken: normalize(input.verifyToken) || null,
+    authMode: normalize(input.authMode).toLowerCase() || null,
     enabled: input.enabled !== false,
     dryRun: input.dryRun !== false,
   });
@@ -76,6 +77,7 @@ function optionalPlatformAccount(env, platform) {
     username,
     accessToken: env[`${prefix}_ACCESS_TOKEN`],
     verifyToken: env[`${prefix}_VERIFY_TOKEN`] || (bool(env.SOCIAL_REQUIRE_BRAND_ISOLATION) ? null : env.THREADS_VERIFY_TOKEN),
+    authMode: env[`${prefix}_AUTH_MODE`],
     enabled: bool(env[`${prefix}_ENABLED`], false),
     dryRun: bool(env[`${prefix}_DRY_RUN`], true),
   });
@@ -103,6 +105,7 @@ function publicAccountView(account) {
     language: account.language,
     userId: account.userId,
     username: account.username,
+    authMode: account.authMode,
     enabled: account.enabled,
     dryRun: account.dryRun,
   };
