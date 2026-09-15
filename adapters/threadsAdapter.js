@@ -3,6 +3,32 @@ const { createThreadsTokenManager } = require("../auth/threadsTokenManager");
 
 const DEFAULT_FETCH_TIMEOUT_MS = 20000;
 
+function sanitizeMetaError(error) {
+  if (!error || typeof error !== "object" || Array.isArray(error)) return null;
+
+  const redact = (value) => {
+    if (typeof value !== "string") return value;
+    return value
+      .replace(/(access_token=)[^&\s]+/gi, "$1[REDACTED]")
+      .replace(/(Bearer\s+)[A-Za-z0-9._~+\/-]+/gi, "$1[REDACTED]")
+      .slice(0, 1000);
+  };
+
+  const allowed = {
+    message: redact(error.message),
+    type: redact(error.type),
+    code: error.code ?? null,
+    error_subcode: error.error_subcode ?? null,
+    error_user_title: redact(error.error_user_title),
+    error_user_msg: redact(error.error_user_msg),
+    fbtrace_id: redact(error.fbtrace_id),
+  };
+
+  return Object.fromEntries(
+    Object.entries(allowed).filter(([, value]) => value !== undefined && value !== null && value !== "")
+  );
+}
+
 function createThreadsAdapter({ accessToken, userId }) {
   // Backward-compatible fallback for the existing Railway typo. Prefer THREADS_ACCESS_TOKEN,
   // but accept THREDS_ACCESS_TOKEN so the current sealed value can be used without exposing it.
@@ -97,7 +123,14 @@ function createThreadsAdapter({ accessToken, userId }) {
     try { createRes = await fetchWithRetry(`https://graph.threads.net/v1.0/me/threads?${createParams}`, { method: "POST" }); }
     catch (e) { console.error("Threads container creation network error:", e?.message || String(e)); return null; }
     let createData; try { createData = await createRes.json(); } catch (_) { console.error("Threads container creation error: unparseable response", createRes.status); return null; }
-    if (!createRes.ok || createData.error) { console.error("Threads container creation error:", createRes.status, createData?.error?.code || "unknown_error"); return null; }
+    if (!createRes.ok || createData.error) {
+      console.error("Threads container creation error", JSON.stringify({
+        status: createRes.status,
+        parentCommentId: String(parentCommentId),
+        error: sanitizeMetaError(createData?.error),
+      }));
+      return null;
+    }
     const creationId = createData.id;
     if (!creationId) { console.error("Threads container creation error: missing creation id"); return null; }
     console.log("Threads reply container created", JSON.stringify({ id: creationId })); return creationId;
@@ -122,7 +155,14 @@ function createThreadsAdapter({ accessToken, userId }) {
     let publishData;
     try { publishData = await publishRes.json(); }
     catch (_) { if (publishRes.ok) return { status: "ambiguous" }; return { status: "failed" }; }
-    if (!publishRes.ok || publishData.error) { console.error("Threads publish error:", publishRes.status, publishData?.error?.code || "unknown_error"); return { status: "failed" }; }
+    if (!publishRes.ok || publishData.error) {
+      console.error("Threads publish error", JSON.stringify({
+        status: publishRes.status,
+        creationId: String(creationId),
+        error: sanitizeMetaError(publishData?.error),
+      }));
+      return { status: "failed" };
+    }
     const publishedId = publishData.id || null;
     if (!publishedId) return { status: "ambiguous" };
     console.log("Threads reply posted", JSON.stringify({ id: publishedId })); return { status: "published", id: publishedId };
@@ -137,4 +177,4 @@ function createThreadsAdapter({ accessToken, userId }) {
   return { parseWebhook, getAuthorId, getAuthorUsername, getRootPostId, getCommentId, getCommentText, getParentId, getParentAuthorId, getParentAuthorUsername, getWebhookTargetId, resolveParentAuthor, createReply, publishReply, reply, tokenManager };
 }
 
-module.exports = { createThreadsAdapter };
+module.exports = { createThreadsAdapter, sanitizeMetaError };
