@@ -15,6 +15,7 @@ function createInstagramProvider({
   const adapter = adapterFactory({
     accessToken: account.accessToken,
     userId: account.userId,
+    username: account.username,
     accountKey: account.key,
     authMode: account.authMode || undefined,
     apiVersion,
