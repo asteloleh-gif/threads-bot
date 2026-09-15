@@ -16,6 +16,7 @@ function createInstagramProvider({
     accessToken: account.accessToken,
     userId: account.userId,
     username: account.username,
+    linkedPageId: account.linkedPageId,
     linkedPageAccessToken: account.linkedPageAccessToken,
     accountKey: account.key,
     authMode: account.authMode || undefined,
