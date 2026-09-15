@@ -114,6 +114,33 @@ function createInstagramAdapter({
     return { transportError: null, response, data };
   }
 
+  async function getAccountIdentity() {
+    if (!accessToken) return { status: "failed", reason: "INVALID_CONFIG", code: null };
+    const fields = "id,user_id,username,account_type,media_count";
+    const result = await requestJson(`${endpoint("me")}?fields=${encodeURIComponent(fields)}`, { method: "GET" });
+    const failure = safeMetaFailure(result);
+    if (failure) {
+      return {
+        status: "failed",
+        reason: failure.reason,
+        code: failure.code || null,
+        type: failure.type || null,
+      };
+    }
+
+    const mediaCount = Number(result.data?.media_count);
+    return {
+      status: "ok",
+      identity: {
+        id: result.data?.id ? String(result.data.id) : null,
+        userId: result.data?.user_id ? String(result.data.user_id) : null,
+        username: result.data?.username ? String(result.data.username) : null,
+        accountType: result.data?.account_type ? String(result.data.account_type) : null,
+        mediaCount: Number.isFinite(mediaCount) ? mediaCount : null,
+      },
+    };
+  }
+
   async function listRecentMedia({ limit = 10 } = {}) {
     if (!accessToken || !userId) return { status: "failed", reason: "INVALID_CONFIG", code: null, items: [] };
     const boundedLimit = Math.max(1, Math.min(25, Number(limit) || 10));
@@ -199,6 +226,7 @@ function createInstagramAdapter({
 
   return {
     parseWebhook,
+    getAccountIdentity,
     listRecentMedia,
     listComments,
     normalizePolledComment,
