@@ -36,6 +36,7 @@ function createAccountConfig(input = {}) {
     accessToken: normalize(input.accessToken) || null,
     verifyToken: normalize(input.verifyToken) || null,
     authMode: normalize(input.authMode).toLowerCase() || null,
+    linkedPageId: normalize(input.linkedPageId) || null,
     linkedPageAccessToken: normalize(input.linkedPageAccessToken) || null,
     enabled: input.enabled !== false,
     dryRun: input.dryRun !== false,
@@ -79,6 +80,9 @@ function optionalPlatformAccount(env, platform) {
     accessToken: env[`${prefix}_ACCESS_TOKEN`],
     verifyToken: env[`${prefix}_VERIFY_TOKEN`] || (bool(env.SOCIAL_REQUIRE_BRAND_ISOLATION) ? null : env.THREADS_VERIFY_TOKEN),
     authMode: env[`${prefix}_AUTH_MODE`],
+    linkedPageId: platform === "instagram"
+      ? (env.INSTAGRAM_FACEBOOK_PAGE_ID || env.FACEBOOK_USER_ID)
+      : null,
     linkedPageAccessToken: platform === "instagram"
       ? (env.INSTAGRAM_FACEBOOK_PAGE_ACCESS_TOKEN || env.FACEBOOK_ACCESS_TOKEN)
       : null,
