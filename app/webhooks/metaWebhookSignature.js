@@ -8,16 +8,44 @@ function createMetaWebhookSignature({ env = process.env } = {}) {
   return function authenticate(req, res, next) {
     const platform = detectMetaPlatform(req.body);
     const prefix = platform === "facebook" ? "FACEBOOK" : platform === "instagram" ? "INSTAGRAM" : "THREADS";
-    const secret = env[`${prefix}_APP_SECRET`] || env.META_APP_SECRET;
+    const platformSecretKey = `${prefix}_APP_SECRET`;
+    const secret = env[platformSecretKey] || env.META_APP_SECRET;
+    const secretSource = env[platformSecretKey] ? platformSecretKey : env.META_APP_SECRET ? "META_APP_SECRET" : "NONE";
     const required = platform === "instagram" || platform === "facebook" ||
       String(env.META_WEBHOOK_SIGNATURE_REQUIRED).toLowerCase() === "true" || Boolean(secret);
     if (!required) return next();
     if (!secret) return res.sendStatus(503);
+
     const signature = req.get("x-hub-signature-256") || "";
-    if (!/^sha256=[a-f0-9]{64}$/i.test(signature) || !Buffer.isBuffer(req.rawBody)) return res.sendStatus(403);
+    const signaturePresent = /^sha256=[a-f0-9]{64}$/i.test(signature);
+    const rawBodyPresent = Buffer.isBuffer(req.rawBody);
+
+    if (!signaturePresent || !rawBodyPresent) {
+      console.warn("Meta webhook signature rejected", JSON.stringify({
+        platform,
+        signaturePresent,
+        rawBodyPresent,
+        secretSource,
+        signatureMatch: null,
+      }));
+      return res.sendStatus(403);
+    }
+
     const expected = crypto.createHmac("sha256", secret).update(req.rawBody).digest();
     const actual = Buffer.from(signature.slice(7), "hex");
-    if (!crypto.timingSafeEqual(actual, expected)) return res.sendStatus(403);
+    const signatureMatch = crypto.timingSafeEqual(actual, expected);
+
+    if (!signatureMatch) {
+      console.warn("Meta webhook signature rejected", JSON.stringify({
+        platform,
+        signaturePresent: true,
+        rawBodyPresent: true,
+        secretSource,
+        signatureMatch: false,
+      }));
+      return res.sendStatus(403);
+    }
+
     return next();
   };
 }
