@@ -90,6 +90,29 @@ function createInstagramAdapter({
     return { ...result, diagnostics: { ...diagnostics } };
   }
 
+  function shouldExposeAuthDiagnostics(auth) {
+    return Boolean(auth?.diagnostics?.pageTokenFallbackAttempted);
+  }
+
+  function authMetadata(auth) {
+    if (!shouldExposeAuthDiagnostics(auth)) return {};
+    return {
+      ...(auth?.resolution === "configured_page_token" ? { resolution: auth.resolution } : {}),
+      diagnostics: { ...auth.diagnostics },
+    };
+  }
+
+  function externalizeAuthFailure(auth) {
+    const result = {
+      status: "failed",
+      reason: auth?.reason || "AUTH_RESOLUTION_FAILED",
+      code: auth?.code || null,
+      ...(auth?.type ? { type: auth.type } : {}),
+    };
+    if (shouldExposeAuthDiagnostics(auth)) result.diagnostics = { ...auth.diagnostics };
+    return result;
+  }
+
   function createCommentEvent(value = {}, { rootId = null, ingress = "webhook", webhookField = null } = {}) {
     const sourceId = value?.comment_id || value?.id;
     if (!sourceId) return null;
@@ -289,9 +312,6 @@ function createInstagramAdapter({
       : null;
     if (exactIdPage) return cacheFacebookPage(exactIdPage, "id_match", diagnostics);
 
-    // Instagram Login and Facebook Login can expose different account-id contexts.
-    // If the configured id does not match, safely resolve the linked professional
-    // account by the configured username using each Page's own Page access token.
     if (username) {
       let firstLookupFailure = null;
 
@@ -340,7 +360,7 @@ function createInstagramAdapter({
     }
 
     const auth = await getRuntimeAuth();
-    if (auth.status !== "ok") return auth;
+    if (auth.status !== "ok") return externalizeAuthFailure(auth);
 
     const instagramLogin = authMode === "instagram_login";
     const fields = instagramLogin
@@ -355,7 +375,7 @@ function createInstagramAdapter({
         reason: failure.reason,
         code: failure.code || null,
         type: failure.type || null,
-        diagnostics: auth.diagnostics || null,
+        ...authMetadata(auth),
       };
     }
 
@@ -364,8 +384,7 @@ function createInstagramAdapter({
     const returnedUserId = result.data?.user_id ? String(result.data.user_id) : null;
     return {
       status: "ok",
-      resolution: auth.resolution || null,
-      diagnostics: auth.diagnostics || null,
+      ...authMetadata(auth),
       identity: {
         id,
         userId: returnedUserId || (authMode === "facebook_login" ? id : null),
@@ -381,18 +400,17 @@ function createInstagramAdapter({
       return { status: "failed", reason: "INVALID_CONFIG", code: null, items: [] };
     }
     const auth = await getRuntimeAuth();
-    if (auth.status !== "ok") return { ...auth, items: [] };
+    if (auth.status !== "ok") return { ...externalizeAuthFailure(auth), items: [] };
 
     const boundedLimit = Math.max(1, Math.min(25, Number(limit) || 10));
     const fields = "id,timestamp,media_product_type,comments_count";
     const url = `${endpoint(`${encodeURIComponent(auth.userId)}/media`)}?fields=${encodeURIComponent(fields)}&limit=${boundedLimit}`;
     const result = await requestJson(url, { method: "GET" }, auth.token);
     const failure = safeMetaFailure(result);
-    if (failure) return { ...failure, diagnostics: auth.diagnostics || null };
+    if (failure) return { ...failure, ...authMetadata(auth) };
     return {
       status: "ok",
-      resolution: auth.resolution || null,
-      diagnostics: auth.diagnostics || null,
+      ...authMetadata(auth),
       items: Array.isArray(result.data?.data) ? result.data.data : [],
     };
   }
@@ -400,14 +418,14 @@ function createInstagramAdapter({
   async function listComments(mediaId, { limit = 50 } = {}) {
     if (!accessToken || !mediaId) return { status: "failed", reason: "INVALID_CONFIG_OR_INPUT", code: null, items: [] };
     const auth = await getRuntimeAuth();
-    if (auth.status !== "ok") return { ...auth, items: [] };
+    if (auth.status !== "ok") return { ...externalizeAuthFailure(auth), items: [] };
 
     const boundedLimit = Math.max(1, Math.min(50, Number(limit) || 50));
     const fields = "id,text,username,from,parent_id,timestamp,replies{id,text,username,from,parent_id,timestamp}";
     const url = `${endpoint(`${encodeURIComponent(mediaId)}/comments`)}?fields=${encodeURIComponent(fields)}&limit=${boundedLimit}`;
     const result = await requestJson(url, { method: "GET" }, auth.token);
     const failure = safeMetaFailure(result);
-    if (failure) return { ...failure, diagnostics: auth.diagnostics || null };
+    if (failure) return { ...failure, ...authMetadata(auth) };
 
     const items = [];
     for (const comment of Array.isArray(result.data?.data) ? result.data.data : []) {
@@ -420,7 +438,7 @@ function createInstagramAdapter({
         });
       }
     }
-    return { status: "ok", resolution: auth.resolution || null, diagnostics: auth.diagnostics || null, items };
+    return { status: "ok", ...authMetadata(auth), items };
   }
 
   function normalizePolledComment(comment, mediaId) {
@@ -450,11 +468,8 @@ function createInstagramAdapter({
 
     const auth = await getRuntimeAuth();
     if (auth.status !== "ok") {
-      return {
-        status: "failed",
-        reason: auth.reason || "AUTH_RESOLUTION_FAILED",
-        code: auth.code || null,
-      };
+      const failure = externalizeAuthFailure(auth);
+      return { status: "failed", reason: failure.reason, code: failure.code || null };
     }
 
     const body = new URLSearchParams({ message: String(message) });
@@ -464,8 +479,6 @@ function createInstagramAdapter({
       body,
     }, auth.token);
 
-    // A direct comment-reply POST is not safely retryable: a timeout or 5xx can
-    // happen after Meta committed the mutation. Hold instead of risking a duplicate.
     if (result.transportError) return { status: "ambiguous", reason: "NETWORK_OUTCOME_UNKNOWN" };
     if (result.response.status >= 500) return { status: "ambiguous", reason: "SERVER_OUTCOME_UNKNOWN" };
     if (!result.response.ok || result.data?.error) {
