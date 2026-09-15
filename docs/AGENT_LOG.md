@@ -414,3 +414,20 @@ Never put access tokens, secrets, passwords, private connection strings, or othe
 - Facebook real Page comment ingress/reply remains pending.
 - `astel.u` is intentionally not yet promoted to the #55/current canary baseline; promote only after astel.us release gate passes.
 - `npm audit` still reports 2 moderate dependency vulnerabilities; backlog, do not apply a blind production fix.
+
+---
+
+## 2026-09-15 — Instagram Facebook Login identity field compatibility
+
+**Status:** DONE
+
+**Done:**
+- Removed unsupported `account_type` from the Facebook Login Instagram identity request while preserving the Instagram Login field set.
+- Added regression coverage proving Facebook Login accepts a missing account type, sends bearer tokens only in headers, and never includes credentials in request URLs.
+
+**Regression:** Full suite passes: 219/219 tests, 0 failures.
+
+**Changed files/services:** `adapters/instagramAdapter.js`, `tests/instagramFacebookLogin.test.js`, `tests/instagramPageTokenFallback.test.js`, `docs/AGENT_LOG.md`; no Meta or Railway configuration changes.
+
+**Open questions / external verification:**
+- Verify the production Instagram identity, media, comments, and dry-run pipeline after merge and automatic Railway deployment.

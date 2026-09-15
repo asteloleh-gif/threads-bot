@@ -365,7 +365,7 @@ function createInstagramAdapter({
     const instagramLogin = authMode === "instagram_login";
     const fields = instagramLogin
       ? "id,user_id,username,account_type,media_count"
-      : "id,username,account_type,media_count";
+      : "id,username,media_count";
     const path = instagramLogin ? "me" : encodeURIComponent(auth.userId);
     const result = await requestJson(`${endpoint(path)}?fields=${encodeURIComponent(fields)}`, { method: "GET" }, auth.token);
     const failure = safeMetaFailure(result);

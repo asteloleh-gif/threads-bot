@@ -53,7 +53,6 @@ test("Instagram Facebook Login falls back to configured Facebook Page token", as
         return response(200, {
           id: "facebook-linked-ig-id",
           username: "astel.us",
-          account_type: "BUSINESS",
           media_count: 9,
         });
       }
@@ -69,6 +68,7 @@ test("Instagram Facebook Login falls back to configured Facebook Page token", as
   assert.equal(identity.status, "ok");
   assert.equal(identity.resolution, "configured_page_token");
   assert.equal(identity.identity.username, "astel.us");
+  assert.equal(identity.identity.accountType, null);
   assert.equal(identity.identity.mediaCount, 9);
   assert.deepEqual(identity.diagnostics, {
     pagesVisible: 0,
@@ -83,6 +83,11 @@ test("Instagram Facebook Login falls back to configured Facebook Page token", as
   const media = await adapter.listRecentMedia();
   assert.equal(media.status, "ok");
   assert.equal(media.items.length, 1);
+  const identityFields = calls
+    .filter(call => new URL(call.url).pathname === "/v26.0/facebook-linked-ig-id")
+    .map(call => new URL(call.url).searchParams.get("fields"));
+  assert.deepEqual(identityFields, ["id,username", "id,username,media_count"]);
+  assert.equal(identityFields.some(fields => fields.includes("account_type")), false);
   assert.equal(calls.some(call => call.url.includes("instagram-user-token")), false);
   assert.equal(calls.some(call => call.url.includes("existing-page-token")), false);
 });
