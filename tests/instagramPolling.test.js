@@ -197,3 +197,49 @@ test("Instagram polling does not mark transiently deferred comments as seen", as
   assert.equal(result.deferred, 1);
   assert.equal(store.state().seen.has("c-new"), false);
 });
+
+test("Instagram polling startup records safe account identity diagnostics", async () => {
+  const store = memoryStore();
+  const provider = providerFixture();
+  provider.account.username = "astel.us";
+  provider.getAccountIdentity = async () => ({
+    status: "ok",
+    identity: {
+      id: "app-scoped-secret-id",
+      userId: "ig-1",
+      username: "astel.us",
+      accountType: "BUSINESS",
+      mediaCount: 17,
+    },
+  });
+
+  const logs = [];
+  const poller = createInstagramCommentPoller({
+    provider,
+    handler: async () => ({ status: "dry-run" }),
+    store,
+    enabled: true,
+    intervalMs: 60000,
+    logger: {
+      log(...args) { logs.push(args.join(" ")); },
+      error(...args) { logs.push(args.join(" ")); },
+    },
+  });
+
+  const result = await poller.init();
+  assert.equal(result.status, "ok");
+  assert.deepEqual(result.identityProbe, {
+    status: "ok",
+    idMatch: true,
+    usernameMatch: true,
+    accountType: "BUSINESS",
+    mediaCount: 17,
+  });
+  assert.deepEqual(poller.health().identityProbe, result.identityProbe);
+  const joined = logs.join("\n");
+  assert.match(joined, /Instagram identity probe/);
+  assert.doesNotMatch(joined, /token/);
+  assert.doesNotMatch(joined, /app-scoped-secret-id/);
+  assert.doesNotMatch(joined, /ig-1/);
+  await poller.stop();
+});
