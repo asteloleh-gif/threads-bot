@@ -69,6 +69,7 @@ test("Threads provider delegates legacy adapter behavior through the new boundar
     tokenManager: { getToken() { return "token"; } },
     parseWebhook(body) { calls.push(["parse", body]); return [body]; },
     reply(parentId, text) { calls.push(["reply", parentId, text]); return Promise.resolve({ status: "published", id: "r1" }); },
+    publishReply(creationId) { calls.push(["adapter-publishReply", creationId]); return Promise.resolve({ status: "published", id: "wrong" }); },
     getCommentId(value) { return value.id; },
   };
   const account = createAccountConfig({ brand: "leo", platform: "threads", username: "leo", userId: "1", accessToken: "token" });
@@ -76,7 +77,8 @@ test("Threads provider delegates legacy adapter behavior through the new boundar
   assert.deepEqual(provider.parseWebhook({ x: 1 }), [{ x: 1 }]);
   assert.equal(provider.getCommentId({ id: "c1" }), "c1");
   assert.deepEqual(await provider.reply("c1", "hello"), { status: "published", id: "r1" });
-  assert.deepEqual(calls, [["parse", { x: 1 }], ["reply", "c1", "hello"]]);
+  assert.deepEqual(await provider.publishReply("c2", "world"), { status: "published", id: "r1" });
+  assert.deepEqual(calls, [["parse", { x: 1 }], ["reply", "c1", "hello"], ["reply", "c2", "world"]]);
   assert.equal(provider.capabilities.publishReplies, true);
 });
 
