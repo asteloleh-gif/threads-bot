@@ -43,6 +43,7 @@ function createInstagramAdapter({
   accessToken,
   userId,
   username,
+  linkedPageAccessToken,
   accountKey,
   authMode = DEFAULT_AUTH_MODE,
   apiVersion = DEFAULT_API_VERSION,
@@ -53,6 +54,7 @@ function createInstagramAdapter({
   accessToken = String(accessToken || "").trim();
   userId = String(userId || "").trim();
   username = normalizeUsername(username);
+  linkedPageAccessToken = String(linkedPageAccessToken || "").trim();
   accountKey = String(accountKey || "instagram:default").trim().toLowerCase();
   authMode = normalizeAuthMode(authMode);
   apiVersion = String(apiVersion || DEFAULT_API_VERSION).replace(/^\/+|\/+$/g, "");
@@ -70,6 +72,45 @@ function createInstagramAdapter({
     return authMode === "facebook_login" && facebookInstagramUserId
       ? facebookInstagramUserId
       : userId;
+  }
+
+  function createDiagnostics() {
+    return {
+      pagesVisible: 0,
+      pagesWithInstagram: 0,
+      identityLookupAttempts: 0,
+      identityLookupSuccesses: 0,
+      pageTokenFallbackConfigured: Boolean(linkedPageAccessToken),
+      pageTokenFallbackAttempted: false,
+      pageTokenFallbackHasInstagram: false,
+    };
+  }
+
+  function withDiagnostics(result, diagnostics) {
+    return { ...result, diagnostics: { ...diagnostics } };
+  }
+
+  function shouldExposeAuthDiagnostics(auth) {
+    return Boolean(auth?.diagnostics?.pageTokenFallbackAttempted);
+  }
+
+  function authMetadata(auth) {
+    if (!shouldExposeAuthDiagnostics(auth)) return {};
+    return {
+      ...(auth?.resolution === "configured_page_token" ? { resolution: auth.resolution } : {}),
+      diagnostics: { ...auth.diagnostics },
+    };
+  }
+
+  function externalizeAuthFailure(auth) {
+    const result = {
+      status: "failed",
+      reason: auth?.reason || "AUTH_RESOLUTION_FAILED",
+      code: auth?.code || null,
+      ...(auth?.type ? { type: auth.type } : {}),
+    };
+    if (shouldExposeAuthDiagnostics(auth)) result.diagnostics = { ...auth.diagnostics };
+    return result;
   }
 
   function createCommentEvent(value = {}, { rootId = null, ingress = "webhook", webhookField = null } = {}) {
@@ -143,11 +184,11 @@ function createInstagramAdapter({
     return { transportError: null, response, data };
   }
 
-  function cacheFacebookPage(page, resolution) {
-    const linkedId = String(page?.instagram_business_account?.id || "").trim();
-    const pageToken = String(page?.access_token || "").trim();
-    if (!linkedId) return { status: "failed", reason: "LINKED_IG_ID_MISSING", code: null };
-    if (!pageToken) return { status: "failed", reason: "PAGE_TOKEN_MISSING", code: null };
+  function cacheFacebookCredentials({ linkedId, pageToken, resolution, diagnostics }) {
+    linkedId = String(linkedId || "").trim();
+    pageToken = String(pageToken || "").trim();
+    if (!linkedId) return withDiagnostics({ status: "failed", reason: "LINKED_IG_ID_MISSING", code: null }, diagnostics);
+    if (!pageToken) return withDiagnostics({ status: "failed", reason: "PAGE_TOKEN_MISSING", code: null }, diagnostics);
     facebookPageAccessToken = pageToken;
     facebookInstagramUserId = linkedId;
     facebookResolution = resolution;
@@ -156,7 +197,77 @@ function createInstagramAdapter({
       token: facebookPageAccessToken,
       userId: facebookInstagramUserId,
       resolution: facebookResolution,
+      diagnostics: { ...diagnostics },
     };
+  }
+
+  function cacheFacebookPage(page, resolution, diagnostics) {
+    return cacheFacebookCredentials({
+      linkedId: page?.instagram_business_account?.id,
+      pageToken: page?.access_token,
+      resolution,
+      diagnostics,
+    });
+  }
+
+  async function verifyLinkedUsername(linkedId, pageToken, diagnostics) {
+    if (!username) return { status: "ok", usernameMatch: true };
+    diagnostics.identityLookupAttempts += 1;
+    const identityUrl = `${endpoint(encodeURIComponent(linkedId))}?fields=${encodeURIComponent("id,username")}`;
+    const identityResult = await requestJson(identityUrl, { method: "GET" }, pageToken);
+    const identityFailure = safeMetaFailure(identityResult);
+    if (identityFailure) return identityFailure;
+    diagnostics.identityLookupSuccesses += 1;
+    return {
+      status: "ok",
+      usernameMatch: normalizeUsername(identityResult.data?.username) === username,
+    };
+  }
+
+  async function resolveConfiguredPageTokenFallback(diagnostics) {
+    if (!linkedPageAccessToken) return null;
+    diagnostics.pageTokenFallbackAttempted = true;
+
+    const pageResult = await requestJson(
+      `${endpoint("me")}?fields=${encodeURIComponent("id,instagram_business_account")}`,
+      { method: "GET" },
+      linkedPageAccessToken
+    );
+    const pageFailure = safeMetaFailure(pageResult);
+    if (pageFailure) {
+      return withDiagnostics({
+        status: "failed",
+        reason: pageFailure.reason,
+        code: pageFailure.code || null,
+        type: pageFailure.type || null,
+      }, diagnostics);
+    }
+
+    const linkedId = String(pageResult.data?.instagram_business_account?.id || "").trim();
+    diagnostics.pageTokenFallbackHasInstagram = Boolean(linkedId);
+    if (!linkedId) {
+      return withDiagnostics({ status: "failed", reason: "PAGE_TOKEN_HAS_NO_LINKED_INSTAGRAM", code: null }, diagnostics);
+    }
+
+    const verified = await verifyLinkedUsername(linkedId, linkedPageAccessToken, diagnostics);
+    if (verified.status !== "ok") {
+      return withDiagnostics({
+        status: "failed",
+        reason: verified.reason || "PAGE_TOKEN_IDENTITY_LOOKUP_FAILED",
+        code: verified.code || null,
+        type: verified.type || null,
+      }, diagnostics);
+    }
+    if (!verified.usernameMatch) {
+      return withDiagnostics({ status: "failed", reason: "PAGE_TOKEN_INSTAGRAM_USERNAME_MISMATCH", code: null }, diagnostics);
+    }
+
+    return cacheFacebookCredentials({
+      linkedId,
+      pageToken: linkedPageAccessToken,
+      resolution: "configured_page_token",
+      diagnostics,
+    });
   }
 
   async function resolveFacebookPageToken() {
@@ -171,8 +282,10 @@ function createInstagramAdapter({
         resolution: facebookResolution,
       };
     }
+
+    const diagnostics = createDiagnostics();
     if (!accessToken || (!userId && !username)) {
-      return { status: "failed", reason: "INVALID_CONFIG", code: null };
+      return withDiagnostics({ status: "failed", reason: "INVALID_CONFIG", code: null }, diagnostics);
     }
 
     const fields = "id,name,access_token,instagram_business_account";
@@ -180,58 +293,59 @@ function createInstagramAdapter({
     const result = await requestJson(url, { method: "GET" }, accessToken);
     const failure = safeMetaFailure(result);
     if (failure) {
-      return {
+      const fallback = await resolveConfiguredPageTokenFallback(diagnostics);
+      if (fallback?.status === "ok") return fallback;
+      return fallback || withDiagnostics({
         status: "failed",
         reason: failure.reason,
         code: failure.code || null,
         type: failure.type || null,
-      };
+      }, diagnostics);
     }
 
     const pages = Array.isArray(result.data?.data) ? result.data.data : [];
+    diagnostics.pagesVisible = pages.length;
+    diagnostics.pagesWithInstagram = pages.filter(item => item?.instagram_business_account?.id).length;
+
     const exactIdPage = userId
       ? pages.find(item => String(item?.instagram_business_account?.id || "") === userId)
       : null;
-    if (exactIdPage) return cacheFacebookPage(exactIdPage, "id_match");
+    if (exactIdPage) return cacheFacebookPage(exactIdPage, "id_match", diagnostics);
 
-    // Instagram Login and Facebook Login can expose different account-id contexts.
-    // If the configured id does not match, safely resolve the linked professional
-    // account by the configured username using each Page's own Page access token.
     if (username) {
-      let lookupAttempts = 0;
-      let lookupSuccesses = 0;
       let firstLookupFailure = null;
 
       for (const page of pages) {
         const linkedId = String(page?.instagram_business_account?.id || "").trim();
         const pageToken = String(page?.access_token || "").trim();
         if (!linkedId || !pageToken) continue;
-        lookupAttempts += 1;
 
-        const identityUrl = `${endpoint(encodeURIComponent(linkedId))}?fields=${encodeURIComponent("id,username")}`;
-        const identityResult = await requestJson(identityUrl, { method: "GET" }, pageToken);
-        const identityFailure = safeMetaFailure(identityResult);
-        if (identityFailure) {
-          if (!firstLookupFailure) firstLookupFailure = identityFailure;
+        const verified = await verifyLinkedUsername(linkedId, pageToken, diagnostics);
+        if (verified.status !== "ok") {
+          if (!firstLookupFailure) firstLookupFailure = verified;
           continue;
         }
-        lookupSuccesses += 1;
-        if (normalizeUsername(identityResult.data?.username) === username) {
-          return cacheFacebookPage(page, "username_match");
+        if (verified.usernameMatch) {
+          return cacheFacebookPage(page, "username_match", diagnostics);
         }
       }
 
-      if (lookupAttempts > 0 && lookupSuccesses === 0 && firstLookupFailure) {
-        return {
+      if (diagnostics.identityLookupAttempts > 0 && diagnostics.identityLookupSuccesses === 0 && firstLookupFailure) {
+        const fallback = await resolveConfiguredPageTokenFallback(diagnostics);
+        if (fallback?.status === "ok") return fallback;
+        return fallback || withDiagnostics({
           status: "failed",
           reason: firstLookupFailure.reason,
           code: firstLookupFailure.code || null,
           type: firstLookupFailure.type || null,
-        };
+        }, diagnostics);
       }
     }
 
-    return { status: "failed", reason: "LINKED_PAGE_NOT_FOUND", code: null };
+    const fallback = await resolveConfiguredPageTokenFallback(diagnostics);
+    if (fallback?.status === "ok") return fallback;
+    if (fallback) return fallback;
+    return withDiagnostics({ status: "failed", reason: "LINKED_PAGE_NOT_FOUND", code: null }, diagnostics);
   }
 
   async function getRuntimeAuth() {
@@ -246,7 +360,7 @@ function createInstagramAdapter({
     }
 
     const auth = await getRuntimeAuth();
-    if (auth.status !== "ok") return auth;
+    if (auth.status !== "ok") return externalizeAuthFailure(auth);
 
     const instagramLogin = authMode === "instagram_login";
     const fields = instagramLogin
@@ -261,6 +375,7 @@ function createInstagramAdapter({
         reason: failure.reason,
         code: failure.code || null,
         type: failure.type || null,
+        ...authMetadata(auth),
       };
     }
 
@@ -269,6 +384,7 @@ function createInstagramAdapter({
     const returnedUserId = result.data?.user_id ? String(result.data.user_id) : null;
     return {
       status: "ok",
+      ...authMetadata(auth),
       identity: {
         id,
         userId: returnedUserId || (authMode === "facebook_login" ? id : null),
@@ -284,16 +400,17 @@ function createInstagramAdapter({
       return { status: "failed", reason: "INVALID_CONFIG", code: null, items: [] };
     }
     const auth = await getRuntimeAuth();
-    if (auth.status !== "ok") return { ...auth, items: [] };
+    if (auth.status !== "ok") return { ...externalizeAuthFailure(auth), items: [] };
 
     const boundedLimit = Math.max(1, Math.min(25, Number(limit) || 10));
     const fields = "id,timestamp,media_product_type,comments_count";
     const url = `${endpoint(`${encodeURIComponent(auth.userId)}/media`)}?fields=${encodeURIComponent(fields)}&limit=${boundedLimit}`;
     const result = await requestJson(url, { method: "GET" }, auth.token);
     const failure = safeMetaFailure(result);
-    if (failure) return failure;
+    if (failure) return { ...failure, ...authMetadata(auth) };
     return {
       status: "ok",
+      ...authMetadata(auth),
       items: Array.isArray(result.data?.data) ? result.data.data : [],
     };
   }
@@ -301,14 +418,14 @@ function createInstagramAdapter({
   async function listComments(mediaId, { limit = 50 } = {}) {
     if (!accessToken || !mediaId) return { status: "failed", reason: "INVALID_CONFIG_OR_INPUT", code: null, items: [] };
     const auth = await getRuntimeAuth();
-    if (auth.status !== "ok") return { ...auth, items: [] };
+    if (auth.status !== "ok") return { ...externalizeAuthFailure(auth), items: [] };
 
     const boundedLimit = Math.max(1, Math.min(50, Number(limit) || 50));
     const fields = "id,text,username,from,parent_id,timestamp,replies{id,text,username,from,parent_id,timestamp}";
     const url = `${endpoint(`${encodeURIComponent(mediaId)}/comments`)}?fields=${encodeURIComponent(fields)}&limit=${boundedLimit}`;
     const result = await requestJson(url, { method: "GET" }, auth.token);
     const failure = safeMetaFailure(result);
-    if (failure) return failure;
+    if (failure) return { ...failure, ...authMetadata(auth) };
 
     const items = [];
     for (const comment of Array.isArray(result.data?.data) ? result.data.data : []) {
@@ -321,7 +438,7 @@ function createInstagramAdapter({
         });
       }
     }
-    return { status: "ok", items };
+    return { status: "ok", ...authMetadata(auth), items };
   }
 
   function normalizePolledComment(comment, mediaId) {
@@ -351,11 +468,8 @@ function createInstagramAdapter({
 
     const auth = await getRuntimeAuth();
     if (auth.status !== "ok") {
-      return {
-        status: "failed",
-        reason: auth.reason || "AUTH_RESOLUTION_FAILED",
-        code: auth.code || null,
-      };
+      const failure = externalizeAuthFailure(auth);
+      return { status: "failed", reason: failure.reason, code: failure.code || null };
     }
 
     const body = new URLSearchParams({ message: String(message) });
@@ -365,8 +479,6 @@ function createInstagramAdapter({
       body,
     }, auth.token);
 
-    // A direct comment-reply POST is not safely retryable: a timeout or 5xx can
-    // happen after Meta committed the mutation. Hold instead of risking a duplicate.
     if (result.transportError) return { status: "ambiguous", reason: "NETWORK_OUTCOME_UNKNOWN" };
     if (result.response.status >= 500) return { status: "ambiguous", reason: "SERVER_OUTCOME_UNKNOWN" };
     if (!result.response.ok || result.data?.error) {

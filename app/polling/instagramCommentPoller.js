@@ -12,6 +12,19 @@ function clamp(value, min, max, fallback) {
   return Math.max(min, Math.min(max, Math.floor(number)));
 }
 
+function safeAuthDiagnostics(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    pagesVisible: Number.isFinite(Number(value.pagesVisible)) ? Number(value.pagesVisible) : 0,
+    pagesWithInstagram: Number.isFinite(Number(value.pagesWithInstagram)) ? Number(value.pagesWithInstagram) : 0,
+    identityLookupAttempts: Number.isFinite(Number(value.identityLookupAttempts)) ? Number(value.identityLookupAttempts) : 0,
+    identityLookupSuccesses: Number.isFinite(Number(value.identityLookupSuccesses)) ? Number(value.identityLookupSuccesses) : 0,
+    pageTokenFallbackConfigured: Boolean(value.pageTokenFallbackConfigured),
+    pageTokenFallbackAttempted: Boolean(value.pageTokenFallbackAttempted),
+    pageTokenFallbackHasInstagram: Boolean(value.pageTokenFallbackHasInstagram),
+  };
+}
+
 function createInstagramCommentPoller({
   provider,
   handler,
@@ -81,11 +94,13 @@ function createInstagramCommentPoller({
       result = { status: "failed", reason: "IDENTITY_PROBE_EXCEPTION" };
     }
 
+    const diagnostics = safeAuthDiagnostics(result?.diagnostics);
     if (result?.status !== "ok") {
       lastIdentityProbe = {
         status: "failed",
         reason: result?.reason || "IDENTITY_PROBE_FAILED",
         code: result?.code || null,
+        ...(diagnostics ? { diagnostics } : {}),
       };
       logger.log("Instagram identity probe", JSON.stringify({ accountKey, ...lastIdentityProbe }));
       return lastIdentityProbe;
@@ -103,6 +118,8 @@ function createInstagramCommentPoller({
       usernameMatch: Boolean(configuredUsername && observedUsername && configuredUsername === observedUsername),
       accountType: identity.accountType || null,
       mediaCount: Number.isFinite(identity.mediaCount) ? identity.mediaCount : null,
+      ...(result?.resolution ? { resolution: String(result.resolution) } : {}),
+      ...(diagnostics ? { diagnostics } : {}),
     };
     logger.log("Instagram identity probe", JSON.stringify({ accountKey, ...lastIdentityProbe }));
     return lastIdentityProbe;
