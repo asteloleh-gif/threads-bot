@@ -48,13 +48,16 @@ test("persona retrieval keeps rules and selects only relevant public-safe memori
   assert.match(formatted, /examples as verified facts/i);
 });
 
-test("dry-run secondary community path rolls back reservation instead of consuming success budget", () => {
+test("dry-run secondary community keeps dedupe in an isolated safety namespace", () => {
   const source = fs.readFileSync(path.join(__dirname, "../app/community/createCommunityRuntime.js"), "utf8");
+  assert.match(source, /const safetyNamespace = dryRunMode \? `\$\{ns\}:dryrun` : ns;/);
+  assert.ok((source.match(/namespace: safetyNamespace/g) || []).length >= 2);
+
   const start = source.indexOf("if (safety.isDryRun())");
   assert.notEqual(start, -1);
   const end = source.indexOf("if (!(await safety.verifyBranchLease", start);
   assert.notEqual(end, -1);
   const block = source.slice(start, end);
-  assert.match(block, /await safety\.rollback\(reservation\)/);
-  assert.doesNotMatch(block, /commitSuccess/);
+  assert.match(block, /await safety\.commitSuccess\(reservation, null, null\)/);
+  assert.doesNotMatch(block, /await safety\.rollback\(reservation\)/);
 });
