@@ -4,6 +4,7 @@ const { isHumanLockMarker } = require("../../policy/replyBehavior");
 const { routeComment } = require("../../router/conversationRouter");
 const { resolveParentForRouting } = require("../../router/parentResolver");
 const { GRAPH_STATUS } = require("../../graph/conversationGraph");
+const { createPersonaMemoryContextProvider } = require("./personaMemoryContext");
 
 function createCommunityRuntime({
   provider,
@@ -40,6 +41,7 @@ function createCommunityRuntime({
     namespace: ns,
     ttlSeconds: policy.conversationResetHours * 60 * 60,
   });
+  const getPersonaContext = createPersonaMemoryContextProvider({ env: process.env });
 
   async function init() {
     await safety.init();
@@ -168,7 +170,11 @@ function createCommunityRuntime({
       });
       if (memory.reason !== "OK") throw new Error(`MEMORY_${memory.reason}`);
 
-      const context = await getContext();
+      const [baseContext, personaContext] = await Promise.all([
+        getContext(text, { platform: provider.platform, accountKey: account.key }),
+        getPersonaContext(text),
+      ]);
+      const context = [baseContext, personaContext].filter(Boolean).join("\n\n");
       const generated = await generateReply(text, context, {
         closeConversation,
         memory: memory.messages,
@@ -191,7 +197,9 @@ function createCommunityRuntime({
       }
 
       if (safety.isDryRun()) {
-        await safety.commitSuccess(reservation, null, null);
+        // Dry-run proves the full read/safety/context/AI path, but must not consume
+        // live conversation/global reply budget or leave a cooldown reservation.
+        await safety.rollback(reservation);
         return { status: "dry-run", reason: "WOULD_REPLY" };
       }
 
