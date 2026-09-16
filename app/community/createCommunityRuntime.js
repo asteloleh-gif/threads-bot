@@ -26,6 +26,8 @@ function createCommunityRuntime({
 
   const account = provider.account;
   const ns = namespace || `astel:v91:${account.key}`;
+  const dryRunMode = String(account.dryRun).toLowerCase() === "true";
+  const safetyNamespace = dryRunMode ? `${ns}:dryrun` : ns;
   const safety = createSafetyPipeline({
     threadsUserId: account.userId,
     selfUserId: account.userId,
@@ -34,11 +36,11 @@ function createCommunityRuntime({
     botDryRun: String(account.dryRun),
     redisUrl,
     policy,
-    namespace: ns,
+    namespace: safetyNamespace,
   });
   const humanLocks = createHumanLockStore({
     redisUrl,
-    namespace: ns,
+    namespace: safetyNamespace,
     ttlSeconds: policy.conversationResetHours * 60 * 60,
   });
   const getPersonaContext = createPersonaMemoryContextProvider({ env: process.env });
@@ -197,9 +199,9 @@ function createCommunityRuntime({
       }
 
       if (safety.isDryRun()) {
-        // Dry-run proves the full read/safety/context/AI path, but must not consume
-        // live conversation/global reply budget or leave a cooldown reservation.
-        await safety.rollback(reservation);
+        // Keep dry-run idempotency/dedupe, but its isolated Redis namespace means
+        // simulated successes can never consume the live reply/global budget.
+        await safety.commitSuccess(reservation, null, null);
         return { status: "dry-run", reason: "WOULD_REPLY" };
       }
 
