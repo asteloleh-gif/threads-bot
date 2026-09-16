@@ -4,12 +4,17 @@ const TRANSIENT_REASONS = new Set([
   "DURABLE_STORE_UNAVAILABLE",
   "COMMUNITY_RUNTIME_MISSING",
   "SAFETY_STORE_UNAVAILABLE",
+  "INVALID_PAYLOAD",
 ]);
 
 function clamp(value, min, max, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(number)));
+}
+
+function eventHasAuthor(event) {
+  return Boolean(event?.author?.id || event?.author?.username);
 }
 
 function createFacebookCommentPoller({
@@ -105,6 +110,37 @@ function createFacebookCommentPoller({
   async function readPostComments(post, { force = false } = {}) {
     if (!force && (Number(post?.comments_count) || 0) <= 0) return { status: "ok", items: [] };
     return provider.listComments(post.id, { limit: perPostCommentsLimit });
+  }
+
+  async function hydrateMissingAuthor(item) {
+    if (eventHasAuthor(item?.event) || typeof provider.getComment !== "function") {
+      return { ...item, authorHydrationAttempted: false, authorHydrated: false };
+    }
+
+    let detail = null;
+    try {
+      detail = await provider.getComment(item.commentId);
+    } catch (_) {
+      detail = null;
+    }
+    if (!detail) {
+      return { ...item, authorHydrationAttempted: true, authorHydrated: false };
+    }
+
+    const native = {
+      ...(item.native || {}),
+      ...detail,
+      post_id: item.native?.post_id || item.event?.rootId || detail?.post_id || null,
+      parent_id: item.native?.parent_id || detail?.parent?.id || detail?.parent_id || null,
+    };
+    const event = provider.normalizePolledComment(native, item.event?.rootId || native.post_id) || item.event;
+    return {
+      ...item,
+      native,
+      event,
+      authorHydrationAttempted: true,
+      authorHydrated: eventHasAuthor(event),
+    };
   }
 
   async function prime(postItems) {
@@ -223,22 +259,39 @@ function createFacebookCommentPoller({
       let processed = 0;
       let deferred = 0;
       let failed = 0;
+      let authorHydrationAttempts = 0;
+      let authorHydrated = 0;
+      let authorUnavailable = 0;
       const marked = [];
 
       for (const item of discovered) {
         try {
+          const candidate = await hydrateMissingAuthor(item);
+          if (candidate.authorHydrationAttempted) authorHydrationAttempts += 1;
+          if (candidate.authorHydrated) authorHydrated += 1;
+          if (candidate.authorHydrationAttempted && !eventHasAuthor(candidate.event)) {
+            authorUnavailable += 1;
+            logger.log("Facebook polling author unavailable", JSON.stringify({
+              accountKey,
+              sourceId: candidate.commentId,
+              rootIdPresent: Boolean(candidate.event?.rootId),
+              textPresent: Boolean(String(candidate.event?.text || "").trim()),
+              hydrationAttempted: true,
+            }));
+          }
+
           const result = await handler({
             platform: "facebook",
             provider,
-            event: item.event,
-            native: item.native,
+            event: candidate.event,
+            native: candidate.native,
           });
           if (result?.status === "ignored" && TRANSIENT_REASONS.has(result?.reason)) {
             deferred += 1;
             continue;
           }
-          marked.push(item.commentId);
-          seen.add(item.commentId);
+          marked.push(candidate.commentId);
+          seen.add(candidate.commentId);
           processed += 1;
         } catch (error) {
           failed += 1;
@@ -260,6 +313,9 @@ function createFacebookCommentPoller({
         processed,
         deferred,
         failed,
+        authorHydrationAttempts,
+        authorHydrated,
+        authorUnavailable,
       };
 
       if (discovered.length || readFailures || failed || forceFullScan) {
