@@ -221,6 +221,29 @@ test("Facebook polling does not mark transiently deferred comments as seen", asy
   assert.equal(store.state().seen.has("c-new"), false);
 });
 
+test("Facebook polling retries unresolved authorless branches and branch contention", async () => {
+  for (const reason of ["AUTHORLESS_UNTRUSTED", "BRANCH_BUSY"]) {
+    const store = memoryStore();
+    const provider = providerFixture();
+    const poller = createFacebookCommentPoller({
+      provider,
+      handler: async () => ({ status: "ignored", reason }),
+      store,
+      enabled: true,
+      logger: { log() {}, error() {} },
+    });
+    await poller.runOnce();
+    provider.setPosts([{ id: "p1", comments_count: 2 }]);
+    provider.setComments([
+      { id: "c-old", parent_id: "p1" },
+      { id: "c-new", message: "hello", parent_id: "p1" },
+    ]);
+    const result = await poller.runOnce();
+    assert.equal(result.deferred, 1, reason);
+    assert.equal(store.state().seen.has("c-new"), false, reason);
+  }
+});
+
 test("Facebook polling startup records safe Page identity diagnostics", async () => {
   const store = memoryStore();
   const provider = providerFixture();

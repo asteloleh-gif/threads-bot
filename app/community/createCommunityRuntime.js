@@ -65,7 +65,17 @@ function createCommunityRuntime({
     const authorId = provider.getAuthorId(c);
     const rootId = provider.getRootPostId(c);
     let text = provider.getCommentText(c) || "";
-    if (!commentId || (!author && !authorId) || !rootId) return { status: "ignored", reason: "INVALID_PAYLOAD" };
+    const authorlessFacebook = provider.platform === "facebook" && !author && !authorId;
+    if (!commentId || !rootId || (!author && !authorId && !authorlessFacebook)) {
+      return { status: "ignored", reason: "INVALID_PAYLOAD" };
+    }
+    // Only Page-owned post polling has a trusted root when Meta omits `from`.
+    // A webhook or arbitrary event without an author cannot establish that fact.
+    if (authorlessFacebook && (
+      c?.platform !== "facebook" || c?.accountKey !== account.key ||
+      c?.metadata?.ingress !== "polling" ||
+      String(c?.metadata?.targetPageId || "") !== String(account.userId || "")
+    )) return { status: "ignored", reason: "AUTHORLESS_UNTRUSTED" };
 
     const selfAuthored = safety.isSelfAuthored({ authorId, authorUsername: author });
     if (selfAuthored) {
@@ -88,6 +98,11 @@ function createCommunityRuntime({
       if (await safety.isBotGeneratedId(commentId)) return { status: "ignored", reason: "BOT_GENERATED_OBJECT" };
       const existing = await safety.getSourceStatus(commentId);
       if (existing) return { status: "ignored", reason: "DUPLICATE" };
+      if (authorlessFacebook) {
+        const knownNode = await safety.getGraphNode(commentId);
+        if (knownNode?.isBotGenerated) return { status: "ignored", reason: "BOT_GENERATED_OBJECT" };
+        if (knownNode?.isOwner) return { status: "ignored", reason: "SELF_COMMENT" };
+      }
     } catch (_) {
       return { status: "ignored", reason: "SAFETY_STORE_UNAVAILABLE" };
     }
@@ -105,32 +120,47 @@ function createCommunityRuntime({
       return { status: "ignored", reason: "SAFETY_STORE_UNAVAILABLE" };
     }
 
-    const route = routeComment({
-      authorId,
-      authorUsername: author,
-      ownerUserId: account.userId,
-      ownerUsername: account.username,
-      rootId,
-      parentId: parent.parentId,
-      parentAuthorId: parent.parentAuthorId,
-      parentAuthorUsername: parent.parentAuthorUsername,
-      text,
-    });
-    if (!route.allow) return { status: "ignored", reason: route.reason };
+    if (!authorlessFacebook) {
+      const route = routeComment({
+        authorId,
+        authorUsername: author,
+        ownerUserId: account.userId,
+        ownerUsername: account.username,
+        rootId,
+        parentId: parent.parentId,
+        parentAuthorId: parent.parentAuthorId,
+        parentAuthorUsername: parent.parentAuthorUsername,
+        text,
+      });
+      if (!route.allow) return { status: "ignored", reason: route.reason };
+    }
 
     let graphNode;
     try { graphNode = await safety.getGraphNode(commentId); }
     catch (_) { return { status: "ignored", reason: "GRAPH_UNAVAILABLE" }; }
     if (!graphNode || graphNode.relationshipStatus !== GRAPH_STATUS.RESOLVED || !graphNode.branchKey) {
-      return { status: "ignored", reason: "PENDING_RELATIONSHIP" };
+      return { status: "ignored", reason: authorlessFacebook ? "AUTHORLESS_UNTRUSTED" : "PENDING_RELATIONSHIP" };
     }
 
     const branchKey = graphNode.branchKey;
+    if (authorlessFacebook) {
+      const directRoot = parent.parentId && String(parent.parentId) === String(rootId);
+      if (!directRoot) {
+        let parentNode;
+        try { parentNode = parent.parentId ? await safety.getGraphNode(parent.parentId) : null; }
+        catch (_) { return { status: "ignored", reason: "GRAPH_UNAVAILABLE" }; }
+        if (!parentNode || parentNode.relationshipStatus !== GRAPH_STATUS.RESOLVED ||
+            parentNode.branchKey !== branchKey || String(parentNode.rootId) !== String(rootId)) {
+          return { status: "ignored", reason: "AUTHORLESS_UNTRUSTED" };
+        }
+      }
+    }
     try {
       if (await humanLocks.isLocked(branchKey)) return { status: "ignored", reason: "HUMAN_LOCKED" };
     } catch (_) { return { status: "ignored", reason: "HUMAN_LOCK_STORE_UNAVAILABLE" }; }
 
-    const userKey = safety.getUserKey({ authorId, authorUsername: author });
+    // This is a conversation key, never a synthetic Facebook person identity.
+    const userKey = authorlessFacebook ? `facebook:branch:${branchKey}` : safety.getUserKey({ authorId, authorUsername: author });
     const conversationKey = safety.getConversationKey({ userKey, rootId });
     if (!conversationKey) return { status: "ignored", reason: "INVALID_CONVERSATION" };
 
