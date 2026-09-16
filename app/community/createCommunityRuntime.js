@@ -4,6 +4,7 @@ const { isHumanLockMarker } = require("../../policy/replyBehavior");
 const { routeComment } = require("../../router/conversationRouter");
 const { resolveParentForRouting } = require("../../router/parentResolver");
 const { GRAPH_STATUS } = require("../../graph/conversationGraph");
+const { createPersonaMemoryContextProvider } = require("./personaMemoryContext");
 
 function createCommunityRuntime({
   provider,
@@ -25,6 +26,8 @@ function createCommunityRuntime({
 
   const account = provider.account;
   const ns = namespace || `astel:v91:${account.key}`;
+  const dryRunMode = String(account.dryRun).toLowerCase() === "true";
+  const safetyNamespace = dryRunMode ? `${ns}:dryrun` : ns;
   const safety = createSafetyPipeline({
     threadsUserId: account.userId,
     selfUserId: account.userId,
@@ -33,13 +36,14 @@ function createCommunityRuntime({
     botDryRun: String(account.dryRun),
     redisUrl,
     policy,
-    namespace: ns,
+    namespace: safetyNamespace,
   });
   const humanLocks = createHumanLockStore({
     redisUrl,
-    namespace: ns,
+    namespace: safetyNamespace,
     ttlSeconds: policy.conversationResetHours * 60 * 60,
   });
+  const getPersonaContext = createPersonaMemoryContextProvider({ env: process.env });
 
   async function init() {
     await safety.init();
@@ -168,7 +172,11 @@ function createCommunityRuntime({
       });
       if (memory.reason !== "OK") throw new Error(`MEMORY_${memory.reason}`);
 
-      const context = await getContext();
+      const [baseContext, personaContext] = await Promise.all([
+        getContext(text, { platform: provider.platform, accountKey: account.key }),
+        getPersonaContext(text),
+      ]);
+      const context = [baseContext, personaContext].filter(Boolean).join("\n\n");
       const generated = await generateReply(text, context, {
         closeConversation,
         memory: memory.messages,
@@ -191,6 +199,8 @@ function createCommunityRuntime({
       }
 
       if (safety.isDryRun()) {
+        // Keep dry-run idempotency/dedupe, but its isolated Redis namespace means
+        // simulated successes can never consume the live reply/global budget.
         await safety.commitSuccess(reservation, null, null);
         return { status: "dry-run", reason: "WOULD_REPLY" };
       }
