@@ -23,12 +23,14 @@ function memoryStore() {
 function providerFixture() {
   let posts = [{ id: "p1", comments_count: 1 }];
   let comments = [{ id: "c-old", message: "old", from: { id: "u-old", name: "Old" }, parent_id: "p1", created_time: "2026-09-16T12:00:00Z" }];
+  const commentDetails = new Map();
   return {
     platform: "facebook",
     accountKey: "astel.us:facebook",
     account: { enabled: true, accessToken: "token", userId: "page-1" },
     async listRecentPosts() { return { status: "ok", items: posts }; },
     async listComments() { return { status: "ok", items: comments }; },
+    async getComment(commentId) { return commentDetails.get(String(commentId)) || null; },
     normalizePolledComment(comment, postId) {
       return {
         platform: "facebook",
@@ -46,6 +48,7 @@ function providerFixture() {
     },
     setPosts(next) { posts = next; },
     setComments(next) { comments = next; },
+    setCommentDetail(id, detail) { commentDetails.set(String(id), detail); },
   };
 }
 
@@ -97,6 +100,78 @@ test("Facebook polling dispatches only unseen comments after count changes", asy
   assert.deepEqual(handled, ["c-new"]);
   assert.equal(store.state().seen.has("c-new"), true);
   assert.equal(store.state().counts.p1, 2);
+});
+
+test("Facebook polling hydrates a missing author with direct comment lookup before dispatch", async () => {
+  const store = memoryStore();
+  const provider = providerFixture();
+  const handled = [];
+  const poller = createFacebookCommentPoller({
+    provider,
+    handler: async payload => {
+      handled.push(payload.event.author);
+      return { status: "dry-run" };
+    },
+    store,
+    enabled: true,
+    logger: { log() {}, error() {} },
+  });
+
+  await poller.runOnce();
+  provider.setPosts([{ id: "p1", comments_count: 2 }]);
+  provider.setComments([
+    { id: "c-old", parent_id: "p1", created_time: "2026-09-16T12:00:00Z" },
+    { id: "c-new", message: "hello", parent_id: "p1", created_time: "2026-09-16T12:01:00Z" },
+  ]);
+  provider.setCommentDetail("c-new", {
+    id: "c-new",
+    message: "hello",
+    from: { id: "u1", name: "Buyer" },
+    parent: { id: "p1" },
+    created_time: "2026-09-16T12:01:00Z",
+  });
+
+  const result = await poller.runOnce();
+  assert.equal(result.authorHydrationAttempts, 1);
+  assert.equal(result.authorHydrated, 1);
+  assert.equal(result.authorUnavailable, 0);
+  assert.equal(result.processed, 1);
+  assert.deepEqual(handled, [{ id: "u1", username: "Buyer" }]);
+  assert.equal(store.state().seen.has("c-new"), true);
+});
+
+test("Facebook polling keeps INVALID_PAYLOAD unseen when author cannot be hydrated", async () => {
+  const store = memoryStore();
+  const provider = providerFixture();
+  const logs = [];
+  const poller = createFacebookCommentPoller({
+    provider,
+    handler: async payload => {
+      assert.equal(payload.event.author.id, null);
+      assert.equal(payload.event.author.username, null);
+      return { status: "ignored", reason: "INVALID_PAYLOAD" };
+    },
+    store,
+    enabled: true,
+    logger: { log(...args) { logs.push(args.join(" ")); }, error() {} },
+  });
+
+  await poller.runOnce();
+  provider.setPosts([{ id: "p1", comments_count: 2 }]);
+  provider.setComments([
+    { id: "c-old", parent_id: "p1", created_time: "2026-09-16T12:00:00Z" },
+    { id: "c-new", message: "hello", parent_id: "p1", created_time: "2026-09-16T12:01:00Z" },
+  ]);
+
+  const result = await poller.runOnce();
+  assert.equal(result.authorHydrationAttempts, 1);
+  assert.equal(result.authorHydrated, 0);
+  assert.equal(result.authorUnavailable, 1);
+  assert.equal(result.deferred, 1);
+  assert.equal(result.processed, 0);
+  assert.equal(store.state().seen.has("c-new"), false);
+  assert.match(logs.join("\n"), /Facebook polling author unavailable/);
+  assert.doesNotMatch(logs.join("\n"), /token/);
 });
 
 test("Facebook polling periodic full scan catches comments when summary count is unchanged", async () => {
