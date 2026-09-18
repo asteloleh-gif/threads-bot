@@ -20,20 +20,27 @@ function fixture({ dryRun = true, replyResult = { status: "published", id: "bot-
     account,
     fetchImpl: async () => ({ ok: false, status: 404, async json() { return { error: { code: 100 } }; } }),
   });
-  const calls = { gpt: 0, publish: 0, reservations: 0, memory: [], contexts: 0 };
+  const calls = { gpt: 0, publish: 0, reservations: 0, memory: [], contexts: 0, durableWrites: 0 };
+  const nodes = new Map();
+  const sources = new Map();
+  const botIds = new Set();
+  const durableBotIds = new Set();
+  const leases = new Map();
   provider.reply = async () => { calls.publish += 1; return replyResult; };
   const runtime = createCommunityRuntime({
     provider, policy, getContext: async (...args) => { calls.contexts += 1; return getContext(...args); },
+    isKnownBotReply: async id => durableBotIds.has(String(id)),
+    recordConfirmedBotReply: async ({ replyId }) => {
+      calls.durableWrites += 1;
+      durableBotIds.add(String(replyId));
+      return true;
+    },
     generateReply: async (_text, _context, options) => {
       calls.gpt += 1;
       calls.memory.push(options.memory);
       return { text: "controlled reply" };
     },
   });
-  const nodes = new Map();
-  const sources = new Map();
-  const botIds = new Set();
-  const leases = new Map();
   const safety = runtime.safety;
   Object.assign(safety, {
     isEnabled: () => true,
@@ -41,6 +48,7 @@ function fixture({ dryRun = true, replyResult = { status: "published", id: "bot-
     isDryRun: () => dryRun,
     isSelfAuthored: ({ authorId, authorUsername }) => authorId === account.userId || authorUsername === account.username,
     isBotGeneratedId: async id => botIds.has(id),
+    markBotGeneratedId: async id => { if (id) botIds.add(String(id)); return true; },
     getSourceStatus: async id => sources.get(id) || null,
     getGraphNode: async id => nodes.get(id) || null,
     recordGraphNode: async input => {
@@ -95,7 +103,7 @@ function fixture({ dryRun = true, replyResult = { status: "published", id: "bot-
     if (author) native.from = author;
     return provider.normalizePolledComment(native, rootId);
   }
-  return { runtime, provider, calls, nodes, sources, botIds, event, account };
+  return { runtime, provider, calls, nodes, sources, botIds, durableBotIds, event, account };
 }
 
 test("authorless Facebook root uses owner post and branch identity for dry-run once", async () => {
@@ -194,4 +202,54 @@ test("author-present Facebook retains existing routing; Instagram still rejects 
   instagram.provider.platform = "instagram";
   assert.equal((await instagram.runtime.handleComment(instagram.event("missing"))).reason, "INVALID_PAYLOAD");
   assert.equal(instagram.calls.gpt, 0);
+});
+
+
+test("confirmed Facebook reply id stays quarantined when accounting commit is rejected", async () => {
+  const f = fixture({ dryRun: false, replyResult: { status: "published", id: "bot-777" } });
+  f.runtime.safety.commitSuccess = async () => false;
+
+  const first = await f.runtime.handleComment(f.event("external-commit-reject"));
+  assert.equal(first.status, "ambiguous");
+  assert.equal(first.reason, "PUBLISH_STATE_COMMIT_REJECTED");
+  assert.equal(first.replyId, "bot-777");
+  assert.equal(f.calls.publish, 1);
+  assert.equal(f.calls.gpt, 1);
+  assert.equal(f.botIds.has("bot-777"), true);
+  assert.equal(f.durableBotIds.has("bot-777"), true);
+
+  const beforeGpt = f.calls.gpt;
+  const beforePublish = f.calls.publish;
+  const replay = await f.runtime.handleComment(f.event("bot-777"));
+  assert.equal(replay.reason, "BOT_GENERATED_OBJECT");
+  assert.equal(f.calls.gpt, beforeGpt);
+  assert.equal(f.calls.publish, beforePublish);
+});
+
+test("confirmed Facebook reply id stays locally and durably quarantined when accounting throws", async () => {
+  const f = fixture({ dryRun: false, replyResult: { status: "published", id: "bot-throw" } });
+  f.runtime.safety.commitSuccess = async () => { throw new Error("redis commit unavailable"); };
+  f.runtime.safety.markAmbiguous = async reservation => {
+    f.sources.set(reservation.commentId, "AMBIGUOUS");
+    return true;
+  };
+
+  const first = await f.runtime.handleComment(f.event("external-commit-throw"));
+  assert.equal(first.status, "ambiguous");
+  assert.equal(first.reason, "PUBLISH_STATE_COMMIT_FAILED");
+  assert.equal(first.replyId, "bot-throw");
+  assert.equal(f.calls.publish, 1);
+  assert.equal(f.calls.gpt, 1);
+  assert.equal(f.botIds.has("bot-throw"), true);
+  assert.equal(f.durableBotIds.has("bot-throw"), true);
+
+  // Simulate loss of the Redis bot marker: the runtime-local/durable quarantine
+  // must still stop an authorless replay from reaching GPT.
+  f.botIds.delete("bot-throw");
+  const beforeGpt = f.calls.gpt;
+  const beforePublish = f.calls.publish;
+  const replay = await f.runtime.handleComment(f.event("bot-throw"));
+  assert.equal(replay.reason, "BOT_GENERATED_OBJECT");
+  assert.equal(f.calls.gpt, beforeGpt);
+  assert.equal(f.calls.publish, beforePublish);
 });
