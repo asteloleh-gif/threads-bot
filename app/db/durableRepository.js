@@ -82,6 +82,15 @@ function createDurableRepository({ store } = {}) {
     return { stored: true };
   }
 
+  async function hasReplyId({ accountKey, replyId } = {}) {
+    if (!accountKey || !replyId || !store.isReady()) return false;
+    const result = await store.query(
+      `SELECT 1 FROM replies WHERE account_key = $1 AND platform_reply_id = $2 LIMIT 1`,
+      [String(accountKey), String(replyId)],
+    );
+    return (result?.rowCount || 0) > 0;
+  }
+
   async function recordReply({ accountKey, sourceCommentId, replyId = null, status, text = null, publishedAt = null, metadata = {} } = {}) {
     if (!accountKey || !sourceCommentId || !status) return { stored: false, reason: "INVALID_REPLY" };
     await store.query(
@@ -257,6 +266,7 @@ function createDurableRepository({ store } = {}) {
   return {
     syncAccounts,
     recordSocialEvent,
+    hasReplyId,
     recordReply,
     saveDraft,
     recordPublishEnqueued,
