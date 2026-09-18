@@ -95,6 +95,22 @@ for (const provider of legacy.socialContext.providers.list()) {
       try { await postgresStore.query("SELECT 1 AS ok"); return true; }
       catch (_) { return false; }
     },
+    isKnownBotReply: async replyId => {
+      if (!replyId || !durable.isReady()) return false;
+      return durable.hasReplyId({ accountKey: provider.accountKey, replyId });
+    },
+    recordConfirmedBotReply: async ({ sourceCommentId, replyId, replyText }) => {
+      if (!replyId || !durable.isReady()) return false;
+      return durable.recordReply({
+        accountKey: provider.accountKey,
+        sourceCommentId,
+        replyId,
+        status: "PUBLISHED_PENDING_ACCOUNTING",
+        text: replyText,
+        publishedAt: new Date(),
+        metadata: { platform: provider.platform, safetyQuarantine: true },
+      });
+    },
     maxMemoryMessages: Number(MAX_MEMORY_MESSAGES),
     maxMemoryTokens: Number(MAX_MEMORY_TOKENS),
   });
