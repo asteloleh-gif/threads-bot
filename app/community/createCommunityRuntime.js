@@ -14,6 +14,8 @@ function createCommunityRuntime({
   generateReply,
   logInteraction,
   canPublish = async () => true,
+  isKnownBotReply = async () => false,
+  recordConfirmedBotReply = async () => false,
   maxMemoryMessages = 8,
   maxMemoryTokens = 1000,
   namespace,
@@ -44,6 +46,9 @@ function createCommunityRuntime({
     ttlSeconds: policy.conversationResetHours * 60 * 60,
   });
   const getPersonaContext = createPersonaMemoryContextProvider({ env: process.env });
+  // Immediate in-process quarantine closes the gap between a confirmed external
+  // mutation and Redis/durable bookkeeping. Durable/Redis markers cover restarts.
+  const confirmedBotReplyIds = new Set();
 
   async function init() {
     await safety.init();
@@ -76,6 +81,19 @@ function createCommunityRuntime({
       c?.metadata?.ingress !== "polling" ||
       String(c?.metadata?.targetPageId || "") !== String(account.userId || "")
     )) return { status: "ignored", reason: "AUTHORLESS_UNTRUSTED" };
+
+    if (confirmedBotReplyIds.has(String(commentId))) {
+      return { status: "ignored", reason: "BOT_GENERATED_OBJECT" };
+    }
+    try {
+      if (await isKnownBotReply(String(commentId))) {
+        confirmedBotReplyIds.add(String(commentId));
+        return { status: "ignored", reason: "BOT_GENERATED_OBJECT" };
+      }
+    } catch (_) {
+      // Durable lookup is defense-in-depth. Required durable-store failures are
+      // already rejected by the outer handler; Redis safety remains authoritative.
+    }
 
     const selfAuthored = safety.isSelfAuthored({ authorId, authorUsername: author });
     if (selfAuthored) {
@@ -259,8 +277,48 @@ function createCommunityRuntime({
       }
 
       if (result.status === "published") {
-        const committed = await safety.commitSuccess(reservation, result.id, replyText);
-        if (!committed) return { status: "ambiguous", reason: "PUBLISH_STATE_COMMIT_REJECTED" };
+        const publishedReplyId = result.id ? String(result.id) : null;
+        if (!publishedReplyId) {
+          try { await safety.markAmbiguous(reservation); } catch (_) {}
+          return { status: "ambiguous", reason: "PUBLISHED_REPLY_ID_MISSING", replyText };
+        }
+
+        // Meta has confirmed the mutation. Quarantine the reply ID before normal
+        // accounting so an authorless Facebook poll can never treat our reply as
+        // an external comment merely because commitSuccess later fails.
+        confirmedBotReplyIds.add(publishedReplyId);
+        try { await safety.markBotGeneratedId(publishedReplyId); } catch (_) {}
+        try {
+          await recordConfirmedBotReply({
+            accountKey: account.key,
+            platform: provider.platform,
+            sourceCommentId: String(commentId),
+            replyId: publishedReplyId,
+            replyText,
+          });
+        } catch (_) {}
+
+        let committed = false;
+        try {
+          committed = await safety.commitSuccess(reservation, publishedReplyId, replyText);
+        } catch (_) {
+          try { await safety.markAmbiguous(reservation); } catch (_) {}
+          return {
+            status: "ambiguous",
+            reason: "PUBLISH_STATE_COMMIT_FAILED",
+            replyId: publishedReplyId,
+            replyText,
+          };
+        }
+        if (!committed) {
+          try { await safety.markAmbiguous(reservation); } catch (_) {}
+          return {
+            status: "ambiguous",
+            reason: "PUBLISH_STATE_COMMIT_REJECTED",
+            replyId: publishedReplyId,
+            replyText,
+          };
+        }
         if (typeof logInteraction === "function") {
           await logInteraction({
             platform: provider.platform,
