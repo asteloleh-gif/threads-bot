@@ -5,6 +5,8 @@ const TRANSIENT_REASONS = new Set([
   "COMMUNITY_RUNTIME_MISSING",
   "SAFETY_STORE_UNAVAILABLE",
   "INVALID_PAYLOAD",
+  "AUTHORLESS_UNTRUSTED",
+  "BRANCH_BUSY",
 ]);
 
 function clamp(value, min, max, fallback) {
