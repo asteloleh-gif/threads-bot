@@ -195,6 +195,16 @@ test("ambiguous Facebook mutation holds source and is not blindly retried", asyn
   assert.equal(f.calls.gpt, 1);
 });
 
+test("definitive Facebook rejection preserves safe Meta reason and code", async () => {
+  const f = fixture({ dryRun: false, replyResult: { status: "failed", reason: "META_REJECTED", code: 200 } });
+  const result = await f.runtime.handleComment(f.event("meta-rejected"));
+  assert.equal(result.status, "ignored");
+  assert.equal(result.reason, "META_REJECTED");
+  assert.equal(result.code, 200);
+  assert.equal(f.calls.publish, 1);
+  assert.equal(f.calls.gpt, 1);
+});
+
 test("author-present Facebook retains existing routing; Instagram still rejects missing author", async () => {
   const f = fixture();
   assert.equal((await f.runtime.handleComment(f.event("known", { author: { id: "visitor", name: "Visitor" } }))).status, "dry-run");
