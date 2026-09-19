@@ -339,7 +339,11 @@ function createCommunityRuntime({
 
       mutationMayHaveCommitted = false;
       await safety.rollback(reservation);
-      return { status: "ignored", reason: "DEFINITIVE_PUBLISH_FAILURE" };
+      return {
+        status: "ignored",
+        reason: result?.reason || "DEFINITIVE_PUBLISH_FAILURE",
+        code: result?.code || null,
+      };
     } catch (error) {
       if (mutationMayHaveCommitted) {
         try { await safety.markAmbiguous(reservation); } catch (_) {}
