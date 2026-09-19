@@ -199,7 +199,7 @@ async function handleSecondaryWebhook({ platform, provider, event }) {
       status: result?.status || "UNKNOWN",
       text: result?.replyText || null,
       publishedAt: result?.replyId ? new Date() : null,
-      metadata: { reason: result?.reason || null, platform },
+      metadata: { reason: result?.reason || null, code: result?.code || null, platform },
     }));
   }
   console.log("Community event processed", JSON.stringify({
@@ -208,6 +208,7 @@ async function handleSecondaryWebhook({ platform, provider, event }) {
     sourceId: event?.sourceId || null,
     status: result?.status || null,
     reason: result?.reason || null,
+    code: result?.code || null,
     replyId: result?.replyId || null,
   }));
   return result;
