@@ -26,6 +26,7 @@ const { createContentControlStore } = require("./app/content/contentControlStore
 const { createContentControl } = require("./app/content/contentControl");
 const { createContentControlRouter } = require("./app/content/contentControlRouter");
 const { createHyperCrewOrchestrator } = require("./app/orchestration/hyperCrewOrchestrator");
+const { createInternalAnalyticsRouter } = require("./app/analytics/internalAnalyticsRouter");
 const { loadProactiveConfig } = require("./config/proactive");
 
 const app = express();
@@ -54,6 +55,7 @@ const {
   CONTENT_CONTROL_REDIS_NAMESPACE = "astel:content-control:v1",
   CONTENT_CONTROL_IDEMPOTENCY_TTL_SECONDS = "86400",
   HYPER_CREW_ENABLED = "false",
+  ANALYTICS_API_TOKEN = "",
 } = process.env;
 
 function bool(value, fallback = false) {
@@ -128,6 +130,9 @@ const publishEngine = createPublishEngine({
   batchSize: Number(PUBLISH_BATCH_SIZE),
   leaseMs: Number(PUBLISH_LEASE_MS),
 });
+const internalAnalyticsRouter = createInternalAnalyticsRouter({ store: postgresStore, token: ANALYTICS_API_TOKEN });
+if (ANALYTICS_API_TOKEN) app.use("/internal/analytics", internalAnalyticsRouter);
+
 const analyticsEngine = createAnalyticsEngine({
   providerRegistry: legacy.socialContext.providers,
   repository: analyticsRepository,
@@ -372,6 +377,7 @@ module.exports = {
   durable,
   analyticsRepository,
   analyticsEngine,
+  internalAnalyticsRouter,
   contentRuntime,
   hyperCrew,
   contentControlStore,
