@@ -431,3 +431,26 @@ Never put access tokens, secrets, passwords, private connection strings, or othe
 
 **Open questions / external verification:**
 - Verify the production Instagram identity, media, comments, and dry-run pipeline after merge and automatic Railway deployment.
+
+
+## 2026-09-23 — Analytics bridge — Edie Social Engine export
+
+**Status:** DONE
+
+**Done:**
+- Added a bearer-protected read-only `/internal/analytics/export` route for the standalone Astel Hyper Crew / Edie Analytics Hub.
+- Export normalizes stored platform insight snapshots plus rolling comments, published replies and post counts.
+- Durable Social Engine `agent_runs` token/cost telemetry is exported when available.
+- Route is mounted only when `ANALYTICS_API_TOKEN` is configured; no Meta mutation, publishing or safety gate changed.
+- Added regression coverage for authorization, normalized export payload, window clamping and constant-time token comparison.
+- Production `copilot-astel-us` was configured to expose the route and enable the existing read-only analytics engine.
+
+**Commits/PRs:** #69 (main)
+
+**Regression:** GitHub CI PASS on PR #69.
+
+**Changed files/services:** `app/analytics/internalAnalyticsRouter.js`, `server-meta.js`, `.env.example`, analytics export tests; `copilot-astel-us` Railway service.
+
+**Open questions / external verification:**
+- Instagram/Facebook provider insight capabilities remain separate work; current export already carries their durable community activity.
+- YouTube analytics is consumed by the standalone Hyper Crew connector and requires its own Google OAuth credentials.
